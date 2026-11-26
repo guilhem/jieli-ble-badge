@@ -13,6 +13,9 @@
 static lv_obj_t *home, *panel, *image, *text_box, *text_label, *message;
 static lv_obj_t *hint;
 static uint32_t hint_started_ms;
+static lv_obj_t *menu_heading;
+static uint32_t menu_battery_checked_ms;
+static int menu_battery_percent;
 static lv_group_t *keys;
 static lv_event_cb_t settings_cb, tools_cb;
 static unsigned char (*receive_blocked)(void);
@@ -252,16 +255,18 @@ static void show_hint(const char *text)
     hint_started_ms = timer_get_ms();
 }
 
-static void page(const char *title)
+static lv_obj_t *page(const char *title)
 {
     dismiss_hint();
     playing = false;
+    menu_heading = NULL;
     lv_group_remove_all_objs(keys);
     lv_obj_clean(panel);
     lv_obj_t *heading = lv_label_create(panel);
     lv_label_set_text_static(heading, title);
     lv_obj_align(heading, LV_ALIGN_TOP_MID, 0, 25);
     lv_scr_load(panel);
+    return heading;
 }
 
 static lv_obj_t *button(const char *caption, int y, lv_event_cb_t action, intptr_t value)
@@ -549,9 +554,22 @@ unsigned int badge_media_diagnostic_read(char *buffer, unsigned int size)
     return (unsigned int)length < size ? (unsigned int)length : size - 1;
 }
 
+static void refresh_menu_battery(void)
+{
+    extern u8 get_vbat_percent(void);
+    int percent = get_vbat_percent();
+    menu_battery_checked_ms = timer_get_ms();
+    if (percent != menu_battery_percent) {
+        menu_battery_percent = percent;
+        lv_label_set_text_fmt(menu_heading, "Badge  |  Battery %u%%", (unsigned int)percent);
+    }
+}
+
 void badge_media_ui_menu(void)
 {
-    page("Badge");
+    menu_heading = page("Badge");
+    menu_battery_percent = -1;
+    refresh_menu_battery();
     button("Receive", 57, receive, 0);
     button("Gallery", 106, gallery, 0);
     button("Settings", 155, settings_cb, 0);
@@ -605,6 +623,8 @@ unsigned int badge_media_ui_tick(void)
 {
     if (hint && timer_get_ms() - hint_started_ms >= 5000) dismiss_hint();
     if (receiving) refresh_receive();
+    if (menu_heading && lv_scr_act() == panel && timer_get_ms() - menu_battery_checked_ms >= 1000u)
+        refresh_menu_battery();
     if (lv_scr_act() != home) return 1;
     if (svg.animating) {
         update_svg();

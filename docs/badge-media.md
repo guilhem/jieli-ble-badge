@@ -2,6 +2,8 @@
 
 The media firmware displays photos, short looping clips, messages, and animated SVG text on the E87's round screen. It remembers the selected item and the brightness. The screen stays on while charging. On the tested E87, Button 1 opens the menu and Button 2 puts the screen to sleep. Either button wakes it.
 
+The Badge menu shows the battery percentage and updates it once per second while open.
+
 After two seconds without input on a still home screen, the interface checks
 for work every 200 ms. The touch controller is sampled every 50 ms and a
 detected press wakes the interface early. During a clip, an animation or a
