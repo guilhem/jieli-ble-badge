@@ -847,7 +847,7 @@ static const lv_font_fmt_txt_dsc_t font_descriptor = {
     .glyph_bitmap=font_pixels, .glyph_dsc=font_glyphs, .cmaps=font_maps,
     .cmap_num=3, .bpp=2, .cache=&font_cache,
 };
-static const lv_font_t badge_text_font = {
+const lv_font_t badge_text_font = {
     .get_glyph_dsc=lv_font_get_glyph_dsc_fmt_txt, .get_glyph_bitmap=lv_font_get_bitmap_fmt_txt,
     .line_height=24, .base_line=5, .dsc=&font_descriptor,
 };

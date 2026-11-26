@@ -18,6 +18,7 @@ enum badge_media_kind {
     BADGE_MEDIA_PHOTO,
     BADGE_MEDIA_TEXT,
     BADGE_MEDIA_CLIP,
+    BADGE_MEDIA_SVG,
 };
 
 enum badge_media_error {

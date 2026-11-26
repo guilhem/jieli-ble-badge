@@ -70,6 +70,17 @@ The submodule is declared `shallow = true`, so `--init` pulls only that one comm
 badge patch is applied *into* the submodule worktree by design — the submodule is
 permanently "modified" while you are building, and that is expected.
 
+After pulling a change to `badge-menu.patch`, reverse the patch from the revision
+previously built before rerunning setup. For an SDK built from the E87 media
+merge at `4ef6e3c`, run this from the repository root.
+
+```sh
+SDK=tools/community-re/jieli-sdks/e_badge_707_sdk_200
+git show 4ef6e3c:patches/badge/badge-menu.patch | git -C "$SDK" apply --reverse &&
+  scripts/setup-badge-build.sh --skip-postbuild &&
+  scripts/build-badge-fw.sh --board e87 --clean --ota
+```
+
 ### On the post-build tools
 
 They do **not** ship with the SDK (which carries only the Windows `.exe` versions), and they

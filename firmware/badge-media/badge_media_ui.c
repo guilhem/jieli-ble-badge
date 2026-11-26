@@ -3,9 +3,13 @@
 #include "badge_media_codec.h"
 #include "badge_media_store.h"
 #include "badge_media_sample.h"
+#include "badge_media_svg_font.h"
 #include "badge_opp.h"
+#include "badge_svg.h"
 #include "system/includes.h"
-#include "badge_media_font.h"
+
+#define SVG_FRAME_MS 84u
+#define SVG_GLYPH_MARGIN 4
 
 static lv_obj_t *home, *panel, *image, *text_box, *text_label, *message;
 static lv_obj_t *hint;
@@ -21,6 +25,17 @@ static uint32_t shown_kb, pairing_number;
 static uint32_t next_frame_ms, frame_fraction_us;
 static struct badge_avi clip;
 static char body[BADGE_TEXT_MAX + 1];
+static struct {
+    struct badge_svg_scene scene;
+    lv_obj_t *layer;
+    struct {
+        lv_obj_t *label;
+        int width, baseline, x;
+        uint8_t opacity;
+    } texts[BADGE_SVG_TEXTS];
+    uint32_t started_ms, frame_ms;
+    bool animating;
+} svg;
 static lv_img_dsc_t picture = {
     .header = {.cf = LV_IMG_CF_TRUE_COLOR, .w = BADGE_MEDIA_SIDE, .h = BADGE_MEDIA_SIDE},
     .data_size = BADGE_MEDIA_PIXELS * sizeof(uint16_t),
@@ -46,6 +61,92 @@ static void show_image(const lv_img_dsc_t *source)
     lv_obj_center(image);
     lv_obj_clear_flag(image, LV_OBJ_FLAG_HIDDEN);
     lv_obj_invalidate(image);
+}
+
+static void close_svg(void)
+{
+    if (svg.layer) lv_obj_del(svg.layer);
+    svg.layer = NULL;
+    svg.animating = false;
+}
+
+static void unload_home(lv_event_t *event)
+{
+    (void)event;
+    close_svg();
+}
+
+static bool show_svg(void *slot, uint32_t size)
+{
+    char *data = (char *)badge_media_pixels;
+    if (size > BADGE_SVG_MAX || badge_media_read_slot(slot, 0, data, size) != size ||
+        badge_svg_parse(data, size, &svg.scene)) return false;
+
+    lv_obj_add_flag(image, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(text_box, LV_OBJ_FLAG_HIDDEN);
+    svg.layer = lv_obj_create(home);
+    if (!svg.layer) return false;
+    lv_obj_remove_style_all(svg.layer);
+    lv_obj_clear_flag(svg.layer, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(svg.layer, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_set_size(svg.layer, 360, 360);
+    if (hint) lv_obj_move_foreground(hint);
+
+    for (unsigned int i = 0; i < svg.scene.count; ++i) {
+        const struct badge_svg_text *text = &svg.scene.texts[i];
+        const lv_font_t *font = badge_svg_font(text->serif, text->size);
+        lv_obj_t *label = lv_label_create(svg.layer);
+        if (!label) {
+            close_svg();
+            return false;
+        }
+        svg.texts[i].label = label;
+        svg.texts[i].width = lv_txt_get_width(text->text, strlen(text->text), font, 0, LV_TEXT_FLAG_NONE);
+        svg.texts[i].baseline = font->line_height - font->base_line;
+        lv_obj_remove_style_all(label);
+        lv_obj_set_size(label, svg.texts[i].width + 2 * SVG_GLYPH_MARGIN, font->line_height);
+        lv_obj_set_style_pad_left(label, SVG_GLYPH_MARGIN, 0);
+        lv_obj_set_style_pad_right(label, SVG_GLYPH_MARGIN, 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(text->rgb), 0);
+        lv_obj_set_style_text_font(label, font, 0);
+        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_set_style_text_letter_space(label, 0, 0);
+        lv_obj_add_flag(label, LV_OBJ_FLAG_GESTURE_BUBBLE);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
+        lv_label_set_text_static(label, text->text);
+
+        int x, y;
+        svg.animating |= badge_svg_sample(text, 0, &x, &y, &svg.texts[i].opacity);
+        badge_svg_place(text, svg.texts[i].width, svg.texts[i].baseline, &x, &y);
+        svg.texts[i].x = x;
+        lv_obj_set_pos(label, x - SVG_GLYPH_MARGIN, y);
+        lv_obj_set_style_text_opa(label, svg.texts[i].opacity, 0);
+    }
+    svg.frame_ms = svg.started_ms = timer_get_ms();
+    return true;
+}
+
+static void update_svg(void)
+{
+    uint32_t now = timer_get_ms();
+    if (now - svg.frame_ms < SVG_FRAME_MS) return;
+    svg.frame_ms = now;
+    svg.animating = false;
+    for (unsigned int i = 0; i < svg.scene.count; ++i) {
+        const struct badge_svg_text *text = &svg.scene.texts[i];
+        int x, y;
+        uint8_t opacity;
+        svg.animating |= badge_svg_sample(text, now - svg.started_ms, &x, &y, &opacity);
+        badge_svg_place(text, svg.texts[i].width, svg.texts[i].baseline, &x, &y);
+        if (svg.texts[i].x != x) {
+            svg.texts[i].x = x;
+            lv_obj_set_x(svg.texts[i].label, x - SVG_GLYPH_MARGIN);
+        }
+        if (svg.texts[i].opacity != opacity) {
+            svg.texts[i].opacity = opacity;
+            lv_obj_set_style_text_opa(svg.texts[i].label, opacity, 0);
+        }
+    }
 }
 
 static void advance_frame_clock(void)
@@ -76,6 +177,7 @@ static size_t read_sample(void *ctx, void *dst, size_t length)
 
 void badge_media_ui_home(void)
 {
+    close_svg();
     lv_group_remove_all_objs(keys);
     lv_scr_load(home);
     const struct badge_media_item *item = selected >= 0 ? badge_media_get(selected) : NULL;
@@ -97,6 +199,9 @@ void badge_media_ui_home(void)
             show_text(body);
             return;
         }
+        break;
+    case BADGE_MEDIA_SVG:
+        if (show_svg(ctx, item->size)) return;
         break;
     case BADGE_MEDIA_PHOTO:
         if (item->size == picture.data_size &&
@@ -479,6 +584,7 @@ unsigned int badge_media_ui_init(lv_obj_t *screen, lv_group_t *keypad,
     lv_obj_set_style_bg_color(panel, lv_color_black(), 0);
     lv_obj_set_style_text_color(panel, lv_color_white(), 0);
     lv_obj_add_event_cb(home, gesture, LV_EVENT_GESTURE, NULL);
+    lv_obj_add_event_cb(home, unload_home, LV_EVENT_SCREEN_UNLOADED, NULL);
     image = lv_img_create(home);
     lv_obj_add_flag(image, LV_OBJ_FLAG_GESTURE_BUBBLE);
     text_box = lv_obj_create(home);
@@ -502,6 +608,10 @@ unsigned int badge_media_ui_tick(void)
     if (hint && timer_get_ms() - hint_started_ms >= 5000) dismiss_hint();
     if (receiving) refresh_receive();
     if (lv_scr_act() != home) return 1;
+    if (svg.animating) {
+        update_svg();
+        return svg.animating ? 1 : 4;
+    }
     if (!playing) return 4;
     uint32_t now = timer_get_ms();
     if ((int32_t)(now - next_frame_ms) >= 0) {

@@ -213,7 +213,7 @@ class CodecTest(unittest.TestCase):
             os.environ.get("CC", "cc"), "-std=c11", "-O2", "-pthread", "-DCONFIG_BADGE_MENU",
             "-I", str(MEDIA), "-I", str(LVGL), "-I", str(MEDIA / "tests/stubs"),
             str(MEDIA / "tests/test_store.c"), str(MEDIA / "badge_media_store.c"),
-            str(MEDIA / "badge_media_import.c"), str(codec),
+            str(MEDIA / "badge_media_import.c"), str(MEDIA / "badge_svg.c"), str(MEDIA / "yxml.c"), str(codec),
             str(LVGL / "src/extra/libs/sjpg/tjpgd.c"), "-o", str(exe),
         ], check=True)
         subprocess.run([str(exe), str(source), str(clip)], check=True, timeout=20)

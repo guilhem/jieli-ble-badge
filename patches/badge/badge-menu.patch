@@ -7520,6 +7520,18 @@ index ee2e4d7..5a64680 100644
      struct key_event *key_e = (struct key_event *)indev_drv->user_data;
  
      if (ui_scr_key_event_handler(key_e)) {
+diff --git a/SDK/apps/common/ui/lvgl_v8/src/draw/sw/lv_draw_sw_letter.c b/SDK/apps/common/ui/lvgl_v8/src/draw/sw/lv_draw_sw_letter.c
+--- a/SDK/apps/common/ui/lvgl_v8/src/draw/sw/lv_draw_sw_letter.c
++++ b/SDK/apps/common/ui/lvgl_v8/src/draw/sw/lv_draw_sw_letter.c
+@@ -597,3 +597,8 @@
+     blend_dsc.color = dsc->color;
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++    /* The glyph mask already incorporates text opacity. */
++    blend_dsc.opa = LV_OPA_COVER;
++#else
+     blend_dsc.opa = dsc->opa;
++#endif
+     blend_dsc.blend_mode = dsc->blend_mode;
 diff --git a/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgd.c b/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgd.c
 index 414db8a..069d047 100644
 --- a/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgd.c
@@ -26314,7 +26326,7 @@ diff --git a/SDK/build/genFileList.c b/SDK/build/genFileList.c
 index 415f592..e3894b1 100644
 --- a/SDK/build/genFileList.c
 +++ b/SDK/build/genFileList.c
-@@ -1,5 +1,15 @@
+@@ -1,5 +1,18 @@
  #include "app_config.h"
  
 +#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
@@ -26322,15 +26334,18 @@ index 415f592..e3894b1 100644
 +    apps/common/ui/lvgl_v8/badge_media_codec.c \
 +    apps/common/ui/lvgl_v8/badge_media_import.c \
 +    apps/common/ui/lvgl_v8/badge_media_store.c \
++    apps/common/ui/lvgl_v8/badge_media_svg_font.c \
 +    apps/common/ui/lvgl_v8/badge_media_ui.c \
 +    apps/common/ui/lvgl_v8/badge_opp.c \
++    apps/common/ui/lvgl_v8/badge_svg.c \
++    apps/common/ui/lvgl_v8/yxml.c \
 +
 +#endif
 +
  // *INDENT-OFF*
  
  
-@@ -464,6 +474,8 @@ c_SRC_FILES += \
+@@ -464,6 +477,8 @@ c_SRC_FILES += \
  c_SRC_FILES += \
  	apps/common/third_party_profile/jieli/rcsp/ble_rcsp_multi_common.c \
  	apps/common/third_party_profile/jieli/rcsp/ble_rcsp_server.c \

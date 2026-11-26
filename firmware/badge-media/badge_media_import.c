@@ -1,4 +1,5 @@
 #include "badge_media_store.h"
+#include "badge_svg.h"
 
 #include <string.h>
 #include <strings.h>
@@ -24,10 +25,19 @@ static int decoder_started;
 static const uint8_t *jpeg_chunk;
 static size_t jpeg_chunk_size;
 static int decode_reply;
-static uint32_t clip_to_validate;
+static enum badge_media_kind decode_kind;
+static uint32_t decode_size;
 static struct badge_media_jpeg_diagnostics jpeg_diag = {"idle", 0, -1};
 
 static int validate_clip(uint32_t size);
+
+static int validate_svg(uint32_t size)
+{
+    struct badge_svg_scene scene;
+    if (badge_media_store_read_pending(NULL, 0, badge_media_pixels, size) != size)
+        return BADGE_MEDIA_ERR_IO;
+    return badge_svg_parse((char *)badge_media_pixels, size, &scene) ? BADGE_MEDIA_ERR_FORMAT : 0;
+}
 
 struct badge_media_jpeg_diagnostics badge_media_import_jpeg_diagnostics(void)
 {
@@ -92,9 +102,13 @@ static void decode_task(void *unused)
     (void)unused;
     for (;;) {
         os_sem_pend(&decode_start, 0);
-        if (clip_to_validate) {
-            /* Keep AVI parsing and JPEG decode off the Bluetooth stack's task. */
-            finish_decode_step(validate_clip(clip_to_validate));
+        /* Keep media parsing and decoding off the Bluetooth stack's task. */
+        if (decode_kind == BADGE_MEDIA_CLIP) {
+            finish_decode_step(validate_clip(decode_size));
+            continue;
+        }
+        if (decode_kind == BADGE_MEDIA_SVG) {
+            finish_decode_step(validate_svg(decode_size));
             continue;
         }
         struct jpeg_reader reader = { 0 };
@@ -116,7 +130,7 @@ static void decode_task(void *unused)
     }
 }
 
-static int start_decoder(uint32_t clip_size)
+static int start_decoder(enum badge_media_kind kind, uint32_t size)
 {
     if (!decoder_started) {
         if (os_sem_create(&decode_start, 0)) {
@@ -139,7 +153,8 @@ static int start_decoder(uint32_t clip_size)
         }
         decoder_started = 1;
     }
-    clip_to_validate = clip_size;
+    decode_kind = kind;
+    decode_size = size;
     os_sem_post(&decode_start);
     return 0;
 }
@@ -160,6 +175,8 @@ static uint32_t transfer_limit(enum badge_media_kind kind)
         return MAX_JPEG_INPUT;
     case BADGE_MEDIA_CLIP:
         return BADGE_MEDIA_MAX_CLIP;
+    case BADGE_MEDIA_SVG:
+        return BADGE_SVG_MAX;
     default:
         return BADGE_TEXT_MAX;
     }
@@ -184,6 +201,8 @@ int badge_media_import_begin(const char *name, uint32_t expected)
         kind = BADGE_MEDIA_TEXT;
     } else if (!strcasecmp(ext, ".avi")) {
         kind = BADGE_MEDIA_CLIP;
+    } else if (!strcasecmp(ext, ".svg")) {
+        kind = BADGE_MEDIA_SVG;
     } else {
         return BADGE_MEDIA_ERR_FORMAT;
     }
@@ -200,7 +219,7 @@ int badge_media_import_begin(const char *name, uint32_t expected)
         OS_ENTER_CRITICAL();
         jpeg_diag = (struct badge_media_jpeg_diagnostics){"idle", 0, -1};
         OS_EXIT_CRITICAL();
-        if (start_decoder(0)) {
+        if (start_decoder(BADGE_MEDIA_PHOTO, 0)) {
             badge_media_store_abort();
             return BADGE_MEDIA_ERR_IO;
         }
@@ -282,8 +301,9 @@ int badge_media_import_finish(void)
             ret = BADGE_MEDIA_ERR_FORMAT;
         }
         break;
+    case BADGE_MEDIA_SVG:
     case BADGE_MEDIA_CLIP:
-        ret = start_decoder(received);
+        ret = start_decoder(transfer.kind, received);
         if (!ret) {
             os_sem_pend(&decode_done, 0);
             ret = decode_reply;

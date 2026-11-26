@@ -67,6 +67,9 @@ Vendor `.a` libraries are used **as shipped** — the build needs no binary libr
 
 ## Regenerating the patch
 
+The media sources and the vendored [Yxml parser](https://dev.yorhel.nl/yxml) live in
+`firmware/badge-media/`. Leave their copied SDK files out of the regenerated patch.
+
 From the working SDK tree (vanilla + your changes), at the SDK repo root:
 
 ```sh
@@ -74,6 +77,7 @@ git add -A -- ':!SDK/tools/linux' ':!output' ':!SDK/output'
 git diff --cached -- ':!*.a' ':!*.bin' ':!SDK/tools/linux/**' ':!*.cbp' ':!**/*.bat' \
   ':!**/json.txt' ':!SDK/build/fileList.dumy' ':!output/**' ':!SDK/output/**' \
   ':!SDK/apps/common/ui/lvgl_v8/badge_media_*' ':!SDK/apps/common/ui/lvgl_v8/badge_opp.*' \
+  ':!SDK/apps/common/ui/lvgl_v8/badge_svg.*' ':!SDK/apps/common/ui/lvgl_v8/yxml.*' \
   > ../../../../patches/badge/badge-menu.patch
 git reset
 ```
