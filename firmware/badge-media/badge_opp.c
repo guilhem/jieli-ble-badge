@@ -208,7 +208,13 @@ extern void stack_run_loop_register(struct run_loop *, void (*)(struct run_loop 
 extern void stack_run_loop_resume(void);
 
 static OS_MUTEX mutex;
-static uint8_t ready, security_peer[6], acl_open;
+static OS_SEM control_wake;
+enum control_command { CONTROL_NONE, CONTROL_START, CONTROL_STOP, CONTROL_CONFIRM };
+static enum control_command control_request;
+static uint32_t confirm_number, snapshot_ms;
+static struct badge_opp_status displayed = {.slot = -1};
+static uint8_t ready, security_peer[6], acl_open, controller_off_pending;
+static void control_task(void *unused);
 static volatile uint8_t radio_on;
 static uint16_t rfcomm_cid, l2cap_cid, acl_handle, used;
 /* A complete OBEX CONNECT is retained until this peer is authorized. */
@@ -439,6 +445,15 @@ static void rfcomm_packet(uint8_t type, uint16_t mux, uint8_t *p, uint16_t n)
 void badge_opp_bt_ready(void)
 {
     if (ready || os_mutex_create(&mutex)) return;
+    if (os_sem_create(&control_wake, 0)) {
+        os_mutex_del(&mutex, 0);
+        return;
+    }
+    if (task_create(control_task, NULL, "badge_opp")) {
+        os_sem_del(&control_wake, 0);
+        os_mutex_del(&mutex, 0);
+        return;
+    }
     stack_run_loop_register(&security_loop, check_security, NULL);
     rfcomm_register_service_internal(NULL, rfcomm_packet, OPP_CHANNEL, 512);
     ready = 1;
@@ -447,11 +462,14 @@ void badge_opp_bt_ready(void)
 const char *badge_opp_name(void) { return bt_get_local_name(); }
 int badge_opp_classic_enabled(void) { return radio_on; }
 
-void badge_opp_start(void)
+static void start_receive(void)
 {
-    if (!ready) {
-        status = (struct badge_opp_status){.state=BADGE_OPP_FAILED, .error=BADGE_OPP_ERR_RADIO, .slot=-1};
-        record_result(BADGE_OPP_ERR_RADIO, 0, "radio_start");
+    int space = badge_media_store_check_space();
+    if (space) {
+        os_mutex_pend(&mutex, 0);
+        status = (struct badge_opp_status){.state = BADGE_OPP_FAILED, .error = space, .slot = -1};
+        record_result(space, 0, "storage_preflight");
+        os_mutex_post(&mutex);
         return;
     }
     os_mutex_pend(&mutex, 0);
@@ -473,8 +491,7 @@ void badge_opp_pair_request(const uint8_t address[6], uint32_t number)
 {
     uint8_t peer[6];
     memcpy(peer, address, 6);
-    if (ready) {
-        os_mutex_pend(&mutex, 0);
+    if (ready && !os_mutex_pend(&mutex, 1)) {
         int available = radio_on && status.state == BADGE_OPP_WAITING && !connected;
         if (available && acl_open) {
             uint8_t channel_peer[6];
@@ -493,10 +510,9 @@ void badge_opp_pair_request(const uint8_t address[6], uint32_t number)
     lmp_hci_user_confirmation_request_negative_reply(peer);
 }
 
-void badge_opp_confirm(uint32_t shown_number)
+static void confirm_receive(uint32_t shown_number)
 {
     uint8_t peer[6];
-    if (!ready) return;
     os_mutex_pend(&mutex, 0);
     if (status.state != BADGE_OPP_PAIRING || status.number != shown_number) { os_mutex_post(&mutex); return; }
     memcpy(peer, security_peer, sizeof(peer));
@@ -510,11 +526,11 @@ static void close_state(void)
 {
     forget_channel();
     radio_on = 0;
+    controller_off_pending = 1;
 }
 
-void badge_opp_stop(void)
+static void stop_receive(void)
 {
-    if (!ready) return;
     os_mutex_pend(&mutex, 0);
     int close = radio_on;
     uint8_t reject_peer[6];
@@ -527,12 +543,10 @@ void badge_opp_stop(void)
     status.state = BADGE_OPP_OFF;
     os_mutex_post(&mutex);
     if (reject) lmp_hci_user_confirmation_request_negative_reply(reject_peer);
-    if (close) badge_opp_set_bredr(0);
 }
 
-struct badge_opp_status badge_opp_poll(void)
+static struct badge_opp_status poll_receive(void)
 {
-    if (!ready) return status;
     os_mutex_pend(&mutex, 0);
     uint32_t elapsed = sys_timer_get_ms() - last_activity;
     if (radio_on && commit_acknowledged && elapsed >= 1000) status.state = BADGE_OPP_DONE;
@@ -548,7 +562,105 @@ struct badge_opp_status badge_opp_poll(void)
     struct badge_opp_status snapshot = status;
     int wake_stack = connect_pending || associating();
     os_mutex_post(&mutex);
-    if (close) badge_opp_set_bredr(0);
-    else if (wake_stack) stack_run_loop_resume();
+    if (controller_off_pending) {
+        if (!badge_opp_set_bredr(0)) controller_off_pending = 0;
+    } else if (wake_stack) {
+        stack_run_loop_resume();
+    }
+    return snapshot;
+}
+
+static int receiving(enum badge_opp_state state)
+{
+    return state != BADGE_OPP_OFF && state != BADGE_OPP_DONE && state != BADGE_OPP_FAILED;
+}
+
+/* The UI mailbox and snapshot never wait for the protocol mutex or app_core. */
+static int control_step(void)
+{
+    OS_ENTER_CRITICAL();
+    enum control_command command = control_request;
+    uint32_t number = confirm_number;
+    control_request = CONTROL_NONE;
+    OS_EXIT_CRITICAL();
+
+    if (command == CONTROL_START) start_receive();
+    else if (command == CONTROL_STOP) stop_receive();
+    else if (command == CONTROL_CONFIRM) confirm_receive(number);
+
+    struct badge_opp_status snapshot = poll_receive();
+    int active = radio_on || controller_off_pending;
+    uint32_t now = sys_timer_get_ms();
+    OS_ENTER_CRITICAL();
+    if (control_request == CONTROL_NONE && (!active || receiving(snapshot.state))) {
+        displayed = snapshot;
+        snapshot_ms = now;
+    }
+    int again = active || control_request != CONTROL_NONE;
+    OS_EXIT_CRITICAL();
+    return again;
+}
+
+static void control_task(void *unused)
+{
+    (void)unused;
+    for (;;) {
+        os_sem_pend(&control_wake, 0);
+        while (control_step()) os_sem_pend(&control_wake, 1);
+    }
+}
+
+void badge_opp_start(void)
+{
+    uint32_t now = sys_timer_get_ms();
+    OS_ENTER_CRITICAL();
+    int wake = ready && !receiving(displayed.state);
+    if (wake) {
+        displayed = (struct badge_opp_status){.state = BADGE_OPP_STARTING, .slot = -1};
+        control_request = CONTROL_START;
+        snapshot_ms = now;
+    } else if (!ready) {
+        displayed = (struct badge_opp_status){.state = BADGE_OPP_FAILED, .error = BADGE_OPP_ERR_RADIO, .slot = -1};
+        last = (struct badge_opp_diagnostic){BADGE_OPP_ERR_RADIO, 0, 0, "radio_start"};
+    }
+    OS_EXIT_CRITICAL();
+    if (wake) os_sem_post(&control_wake);
+}
+
+void badge_opp_stop(void)
+{
+    uint32_t now = sys_timer_get_ms();
+    OS_ENTER_CRITICAL();
+    int wake = ready && receiving(displayed.state) && displayed.state != BADGE_OPP_STOPPING;
+    if (wake) {
+        displayed.state = BADGE_OPP_STOPPING;
+        control_request = CONTROL_STOP;
+        snapshot_ms = now;
+    }
+    OS_EXIT_CRITICAL();
+    if (wake) os_sem_post(&control_wake);
+}
+
+void badge_opp_confirm(uint32_t shown_number)
+{
+    OS_ENTER_CRITICAL();
+    int wake = displayed.state == BADGE_OPP_PAIRING && displayed.number == shown_number &&
+               control_request == CONTROL_NONE;
+    if (wake) {
+        displayed.state = BADGE_OPP_SECURING;
+        control_request = CONTROL_CONFIRM;
+        confirm_number = shown_number;
+    }
+    OS_EXIT_CRITICAL();
+    if (wake) os_sem_post(&control_wake);
+}
+
+struct badge_opp_status badge_opp_poll(void)
+{
+    OS_ENTER_CRITICAL();
+    struct badge_opp_status snapshot = displayed;
+    uint32_t updated = snapshot_ms;
+    OS_EXIT_CRITICAL();
+    snapshot.stalled = receiving(snapshot.state) && sys_timer_get_ms() - updated >= 5000;
     return snapshot;
 }
