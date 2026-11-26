@@ -24,6 +24,149 @@ def compile_and_run(source):
 
 
 class IdleInput(unittest.TestCase):
+    def test_receive_replaces_the_active_controls_before_start(self):
+        media = (ROOT / 'firmware/badge-media/badge_media_ui.c').read_text()
+        functions = [function(media, name) for name in (
+            'static void leave_receive(', 'static void show_receive_status(', 'static void receive(lv_event_t *e)\n{')]
+        source = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+typedef int lv_event_t;
+enum { BADGE_OPP_STARTING = 1 };
+static bool receiving, receive_stalled, blocked, replacement_visible, cancel_visible;
+static int receive_state, starts;
+static uint32_t shown_kb;
+static bool receive_blocked(void) { return blocked; }
+static void badge_opp_stop(void) {}
+static void page(const char *title) { replacement_visible = !strcmp(title, "Receive"); }
+static void note(const char *text) { assert(!strcmp(text, "Starting Bluetooth")); }
+static void button(const char *text, int y, void (*action)(lv_event_t *), int arg) {
+    (void)y; (void)action; (void)arg;
+    cancel_visible = !strcmp(text, "Cancel");
+}
+static void badge_opp_start(void) {
+    assert(receiving && replacement_visible && cancel_visible);
+    ++starts;
+}
+''' + '\n'.join(functions) + r'''
+int main(void) {
+    blocked = true;
+    receive(0);
+    assert(!starts && !replacement_visible);
+    blocked = false;
+    receive(0);
+    assert(starts == 1 && receive_state == BADGE_OPP_STARTING && !receive_stalled);
+}
+'''
+        compile_and_run(source)
+
+    def test_e87_keeps_one_key_until_debounced_release(self):
+        adkey = (SDK / 'SDK/apps/common/device/key/adkey.c').read_text()
+        source = r'''
+#include <assert.h>
+#include <stdint.h>
+#define CONFIG_BADGE_MENU 1
+#define CONFIG_BADGE_BOARD_E87 1
+#define NO_KEY 255
+#define CONFIG_ADKEY_MAX_NUM 3
+#define P33_CON_GET(reg) (physical_low ? 0 : (1u << 1))
+typedef uint8_t u8;
+typedef uint16_t u16;
+static const struct {
+    u8 enable, ad_channel;
+    u16 ad_value[3];
+    u8 key_value[3];
+} config = {1, 0, {342, 571, 1500}, {2, 0, 1}}, *__this = &config;
+static u16 adc;
+static u8 physical_low, published = NO_KEY, pressed;
+static u8 update_blocked, update_starts_on_irq_mask, irq_masked;
+static unsigned int edges, resets;
+static u16 adc_get_value(u8 channel) { (void)channel; return adc; }
+void badge_adkey_publish(u8 key) { published = key; }
+void badge_media_key_pressed(u8 key) { pressed = key; ++edges; }
+u8 badge_restart_blocked(void) { return update_blocked; }
+void unmask_enter_critical(void) {
+    assert(!irq_masked);
+    irq_masked = 1;
+    if (update_starts_on_irq_mask) update_blocked = 1;
+}
+void unmask_exit_critical(void) { assert(irq_masked); irq_masked = 0; }
+void cpu_reset(void) { assert(irq_masked && !update_blocked); ++resets; }
+''' + function(adkey[adkey.index('#else\n\nu8 ad_get_key_value'):], 'u8 ad_get_key_value(') + r'''
+static u8 sample(u16 value, u8 low, unsigned int count) {
+    adc = value;
+    physical_low = low;
+    while (count--) assert(ad_get_key_value() == NO_KEY);
+    return published;
+}
+int main(void) {
+    assert(sample(737, 1, 4) == 1 && edges == 1 && pressed == 1);
+    assert(sample(405, 1, 30) == 1 && edges == 1);
+    assert(sample(4090, 0, 4) == 1);
+    assert(sample(737, 1, 1) == 1);
+    assert(sample(4090, 0, 5) == NO_KEY);
+
+    /* A slow contact can read in the upper window on its way down. */
+    assert(sample(737, 1, 2) == NO_KEY);
+    assert(sample(405, 1, 2) == 0 && edges == 2 && pressed == 0);
+    assert(sample(737, 1, 30) == 0 && edges == 2);
+    assert(sample(4090, 0, 5) == NO_KEY);
+
+    /* ADC alone uses the slower noise filter. Invalid levels emit no key. */
+    assert(sample(737, 0, 24) == NO_KEY);
+    assert(sample(737, 0, 1) == 1 && edges == 3);
+    assert(sample(4090, 0, 5) == NO_KEY);
+    assert(sample(2000, 1, 8) == NO_KEY && edges == 3);
+    assert(sample(279, 1, 1) == 2 && edges == 4);
+}
+'''
+        compile_and_run(source)
+
+        restart = source[:source.index('int main(void)')] + r'''
+int main(void) {
+    /* Buttons still down from a reboot must not start another one. */
+    sample(279, 1, 1200);
+    assert(!resets);
+    sample(4090, 0, 5);
+
+    sample(405, 1, 600);
+    sample(279, 0, 600);
+    assert(!resets);
+    sample(279, 1, 499);
+    assert(!resets);
+    sample(737, 1, 1);
+    sample(279, 1, 499);
+    assert(!resets);
+    /* The UI still sees the original Select press. */
+    assert(sample(279, 1, 1) == 0 && resets == 1);
+    sample(279, 1, 1200);
+    sample(4090, 0, 4);
+    sample(279, 1, 600);
+    assert(resets == 1);
+
+    sample(4090, 0, 5);
+    update_starts_on_irq_mask = 1;
+    sample(279, 1, 500);
+    assert(resets == 1 && update_blocked && !irq_masked);
+    update_blocked = update_starts_on_irq_mask = 0;
+
+    sample(4090, 0, 5);
+    sample(279, 1, 499);
+    update_blocked = 1;
+    sample(279, 1, 1);
+    update_blocked = 0;
+    sample(279, 1, 600);
+    assert(resets == 1);
+
+    sample(4090, 0, 5);
+    sample(737, 1, 10);
+    assert(sample(279, 1, 500) == 1 && resets == 2);
+}
+'''
+        compile_and_run(restart)
+
     def test_press_and_release_before_ui_reads(self):
         apps = SDK / 'SDK/apps'
         ui = (apps / 'common/ui/lvgl_v8/lvgl_main.c').read_text()
@@ -31,7 +174,7 @@ class IdleInput(unittest.TestCase):
         functions = [function(ui, name) for name in (
             'void badge_media_key_pressed(', 'void badge_media_touch_pressed(', 'static u8 badge_media_take_key(')]
         functions.extend(function(touch, name) for name in (
-            'static void axs_poll_task(', 'void get_touch_x_y_status('))
+            'static u8 badge_touch_init(', 'static void axs_poll_task(', 'void get_touch_x_y_status('))
         source = r'''
 #include <assert.h>
 #include <setjmp.h>
@@ -48,12 +191,22 @@ static u8 g_badge_locked, media_input_ready, media_idle_wait, media_pending_key 
 static u8 g_axs_ready, g_axs_want = 1, g_tp_reinit_req, g_tp_cdown, media_touch_idle, media_touch_pending;
 static u32 g_tp_cxy, media_touch_start;
 static int media_input, media_touch_wake, down, last_delay;
+static int init_failures, init_attempts, retry_delays;
 static jmp_buf sampled;
 static void os_sem_post(int *sem) { ++*sem; }
 static void os_sem_pend(int *sem, int ticks) { (void)sem; (void)ticks; assert(0); }
-static int badge_tp_init(void) { return 0; }
+static int badge_tp_init(void) {
+    ++init_attempts;
+    if (!init_failures) return 0;
+    --init_failures;
+    return -1;
+}
 static int badge_tp_read(u16 *x, u16 *y) { *x = 59; *y = 221; return down; }
-static void os_time_dly(int ticks) { last_delay = ticks; longjmp(sampled, 1); }
+static void os_time_dly(int ticks) {
+    if (ticks == 50) { ++retry_delays; return; }
+    last_delay = ticks;
+    longjmp(sampled, 1);
+}
 ''' + '\n'.join(functions) + r'''
 static void sample(int pressed) {
     down = pressed;
@@ -91,6 +244,15 @@ int main(void) {
     media_idle_wait = media_touch_idle = 0;
     sample(1);
     assert(last_delay == 2 && media_input == 1);
+
+    init_attempts = 0;
+    init_failures = 1;
+    sample(0);
+    assert(init_attempts == 2 && retry_delays == 1 && g_axs_ready);
+    init_attempts = retry_delays = 0;
+    init_failures = 2;
+    sample(0);
+    assert(init_attempts == 2 && retry_delays == 1 && !g_axs_ready);
 }
 '''
         compile_and_run(source)
@@ -173,6 +335,29 @@ int main(void) {
     badge_adkey_publish(KEY_AD_NUM1);
     ui_tick();
     assert(active_screen == &screen_menu && refreshes == 5);
+
+    g_scanner_detail_active = 1;
+    badge_adkey_publish(NO_KEY);
+    ui_tick();
+    badge_adkey_publish(KEY_AD_NUM1);
+    ui_tick();
+    assert(g_scanner_retry_req == 1);
+    g_scanner_retry_req = 0;
+    ui_tick();
+    assert(g_scanner_retry_req == 0);
+    badge_adkey_publish(NO_KEY);
+    badge_adkey_publish(KEY_AD_NUM1);
+    ui_tick();
+    assert(g_scanner_retry_req == 1);
+
+    g_scanner_detail_active = 0;
+    badge_adkey_publish(NO_KEY);
+    ui_tick();
+    badge_adkey_publish(KEY_AD_NUM1);
+    ui_tick();
+    assert(keypad_state.state == LV_INDEV_STATE_PR && keypad_state.key == LV_KEY_NEXT);
+    ui_tick();
+    assert(keypad_state.state == LV_INDEV_STATE_REL);
 }
 '''
         compile_and_run(source)

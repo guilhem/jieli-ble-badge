@@ -18,7 +18,7 @@ static lv_event_cb_t settings_cb, tools_cb;
 static unsigned char (*receive_blocked)(void);
 static int selected, viewing;
 static unsigned int brightness;
-static bool receiving, playing;
+static bool receiving, playing, receive_stalled;
 static int receive_state;
 static uint32_t shown_kb, pairing_number;
 static uint32_t next_frame_ms, frame_fraction_us;
@@ -369,8 +369,13 @@ static void leave_receive(lv_event_t *e)
 {
     (void)e;
     badge_opp_stop();
-    receiving = false;
-    badge_media_ui_home();
+}
+
+static void show_receive_status(const char *text, bool cancel)
+{
+    page("Receive");
+    note(text);
+    if (cancel) button("Cancel", 249, leave_receive, 0);
 }
 
 static void prepare_gallery(lv_event_t *e)
@@ -405,25 +410,11 @@ static void receive(lv_event_t *e)
 {
     (void)e;
     if (receive_blocked()) return;
-    int space = badge_media_store_check_space();
-    if (space == BADGE_MEDIA_ERR_SETUP) {
-        offer_gallery_setup(NULL);
-        return;
-    }
-    page("Receive");
-    if (space) {
-        if (space == BADGE_MEDIA_ERR_FULL) {
-            note("Gallery full\nDelete an item to receive another.");
-            button("Gallery", 206, gallery, 0);
-        } else {
-            note("Storage error");
-        }
-        button("Back", 260, go_menu, 0);
-        return;
-    }
-    receive_state = BADGE_OPP_OFF;
+    receive_state = BADGE_OPP_STARTING;
+    receive_stalled = false;
     shown_kb = UINT32_MAX;
     receiving = true;
+    show_receive_status("Starting Bluetooth", true);
     badge_opp_start();
 }
 
@@ -451,9 +442,28 @@ static const char *receive_error(int error)
 static void refresh_receive(void)
 {
     struct badge_opp_status status = badge_opp_poll();
-    bool changed = receive_state != (int)status.state;
+    bool changed = receive_state != (int)status.state || receive_stalled != (bool)status.stalled;
     receive_state = status.state;
+    receive_stalled = status.stalled;
+    if (status.stalled) {
+        if (changed) {
+            printf("badge receive: stalled state=%d bytes=%u\n", status.state, (unsigned int)status.received);
+            bool stopping = status.state == BADGE_OPP_STOPPING;
+            show_receive_status(stopping ? "Still stopping Bluetooth" : "Bluetooth or storage is busy", !stopping);
+        }
+        return;
+    }
     switch (status.state) {
+    case BADGE_OPP_STARTING:
+        if (changed) show_receive_status("Starting Bluetooth", true);
+        break;
+    case BADGE_OPP_STOPPING:
+        if (changed) show_receive_status("Stopping Bluetooth", false);
+        break;
+    case BADGE_OPP_OFF:
+        receiving = false;
+        badge_media_ui_home();
+        break;
     case BADGE_OPP_WAITING:
         if (changed) {
             page("Receive");
@@ -493,7 +503,6 @@ static void refresh_receive(void)
     }
     case BADGE_OPP_DONE:
     case BADGE_OPP_FAILED:
-        badge_opp_stop();
         receiving = false;
         if (status.state == BADGE_OPP_DONE) {
             printf("badge receive: stored %u bytes\n", (unsigned int)status.received);
@@ -504,6 +513,11 @@ static void refresh_receive(void)
                    (unsigned int)diagnostic.response, (unsigned int)diagnostic.bytes, diagnostic.stage);
             if (status.error == BADGE_MEDIA_ERR_SETUP) {
                 offer_gallery_setup(NULL);
+            } else if (status.error == BADGE_MEDIA_ERR_FULL) {
+                page("Receive");
+                note("Gallery full\nDelete an item to receive another.");
+                button("Gallery", 206, gallery, 0);
+                button("Back", 260, go_menu, 0);
             } else {
                 badge_media_ui_home();
                 show_hint(receive_error(status.error));

@@ -362,10 +362,18 @@ index 045b2e8..a118d48 100644
  }
  
 diff --git a/SDK/apps/common/device/key/adkey.c b/SDK/apps/common/device/key/adkey.c
-index 240fc6a..71e9a34 100644
+index 240fc6a..8f564e6 100644
 --- a/SDK/apps/common/device/key/adkey.c
 +++ b/SDK/apps/common/device/key/adkey.c
-@@ -17,6 +17,14 @@
+@@ -8,4 +8,7 @@
+ #include "adkey.h"
+ #include "gpio.h"
+ #include "app_config.h"
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++#include "asm/cpu.h"
++#endif
+ #include "asm/power_interface.h"
+@@ -17,6 +20,14 @@
  #define  TCFG_ADKEY_IR_IO_REUSE  0
  #define  TCFG_ADKEY_LED_SPI_IO_REUSE  0
  
@@ -380,7 +388,7 @@ index 240fc6a..71e9a34 100644
  static const struct adkey_platform_data *__this = NULL;
  
  //按键驱动扫描参数列表
-@@ -30,6 +38,43 @@ struct key_driver_para adkey_scan_param = {
+@@ -30,6 +41,43 @@ struct key_driver_para adkey_scan_param = {
      .scan_time 	  	  = 10,				//按键扫描频率, 单位: ms
  };
  
@@ -424,7 +432,7 @@ index 240fc6a..71e9a34 100644
  u8 ad_get_key_value(void)
  {
      u8 i;
-@@ -39,15 +84,116 @@ u8 ad_get_key_value(void)
+@@ -39,15 +87,101 @@ u8 ad_get_key_value(void)
          return NO_KEY;
      }
  
@@ -434,83 +442,68 @@ index 240fc6a..71e9a34 100644
 -        if ((ad_data <= __this->ad_value[i]) && (__this->ad_value[i] < 0xfffL)) {
 -            return __this->key_value[i];
 +
++    /* A confirmed press settles for four 10 ms samples on PB7. Without
++     * digital confirmation, use 25 samples to reject ADC-only noise. */
++    static u16 cand_min = 0xffff;
++    static u8 press_cnt, release_cnt;
++    static u8 kv = NO_KEY;
++    u8 in_range = ad_data > 8 && ad_data < 3600;
++    u8 pb7_low = (P33_CON_GET(P3_WKUP_LEVEL0) & (1u << 1)) == 0;
++    u8 need = pb7_low ? 4 : 25;
 +
-+    /* badge: the hand-wired buttons have flaky contact. While a button is held,
-+     * imperfect contact raises the divider resistance, so the AD sweeps UP from
-+     * the button's real level through the upper windows (a pressed button 1 read
-+     * wrongly as button 2). Contact can only RAISE the AD, never pull it below the
-+     * button's resistance floor -> classify by the MINIMUM AD seen during the press.
-+     * A brief release debounce keeps short upward bounces from clearing the minimum. */
-+    /* ---- badge: robust PRESS debounce (mitigation for the flaky hand-wired PB7) ----
-+     * PB7 (ADKEY resistor divider + P33 WKUP, weak 100K internal pull-up) picks up
-+     * noise that falls within the buttons' AD range (~400..1800) in erratic bursts with NO
-+     * real press. On badge1 the real buttons also read ~405/~737, so a single sample is
-+     * indistinguishable from noise by threshold alone. What DOES separate them: a
-+     * genuine press STAYS in range across many consecutive 10ms scans, whereas
-+     * the observed noise bursts last ~180..230ms (~18..23 scans) then release.
-+     * Classify by the MINIMUM seen during the sequence (press_min) so the upward sweep
-+     * from flaky contact is still handled. Transient/erratic noise is discarded so it no longer jostles
-+     * the lock/wake state machine (black screen).
-+     *
-+     * Duration debounce alone (BADGE_ADKEY_PRESS_DEBOUNCE, ~250ms) made real short
-+     * taps feel slow. It's now only the FALLBACK: the WKUP gate below (PB7's clean
-+     * digital level) confirms a physical press and commits in ~20ms, keeping fast response
-+     * without reintroducing noise jostle. Scan period = 10ms (scan_time). */
-+#ifndef BADGE_ADKEY_PRESS_DEBOUNCE
-+#define BADGE_ADKEY_PRESS_DEBOUNCE  25   /* fallback: consecutive 10ms scans in range (~250ms) when WKUP does NOT confirm */
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++    static u16 restart_scans;
++    static u8 restart_armed;
++    extern u8 badge_restart_blocked(void);
++
++    /* Sample the chord independently of the latched navigation key. */
++    if (!pb7_low || !in_range || ad_data > __this->ad_value[0]) {
++        restart_scans = 0;
++    } else if (restart_armed) {
++        if (badge_restart_blocked()) {
++            restart_armed = 0;
++        } else if (++restart_scans == 500) {   /* five seconds at 10 ms per scan */
++            restart_armed = 0;
++            unmask_enter_critical();
++            if (!badge_restart_blocked()) cpu_reset();
++            unmask_exit_critical();
++        }
++    }
 +#endif
-+#ifndef BADGE_ADKEY_PRESS_DEBOUNCE_FAST
-+#define BADGE_ADKEY_PRESS_DEBOUNCE_FAST  2   /* physical press confirmed by WKUP: commits in ~20ms */
-+#endif
-+    static u16 press_min   = 0xffff;   // committed press level (0xffff = released)
-+    static u16 cand_min    = 0xffff;   // minimum over the current in-range sequence (uncommitted)
-+    static u8  press_cnt   = 0;        // consecutive in-range samples
-+    static u8  release_cnt = 0;
-+    u8 kv = NO_KEY;
 +
-+    /* PB7 is a P33 WKUP port; its clean digital level (P3_WKUP_LEVEL0 bit1) follows the
-+     * button's physical line and is immune to the ADC coupling noise that a pure threshold debounce
-+     * couldn't separate from a real press. Use it as a press GATE: while PB7 is physically
-+     * low the press is genuine, so COMMIT after just ..._FAST scans (~20ms) instead of the
-+     * full ~250ms (which dropped real short taps -> "the buttons respond slowly"). When WKUP
-+     * does NOT confirm (an AD-only dip = probably noise, or a high-AD button that stays above the
-+     * WKUP threshold) fall back to the long debounce. The ADC value still CLASSIFIES which button
-+     * (minimum tracking handles the upward sweep from flaky contact). Verified on UART: level=0 <=> pressed. */
-+    u8 pb7_low = ((P33_CON_GET(P3_WKUP_LEVEL0) & (1u << 1)) == 0);
-+    u8 need    = pb7_low ? BADGE_ADKEY_PRESS_DEBOUNCE_FAST : BADGE_ADKEY_PRESS_DEBOUNCE;
-+
-+    if ((ad_data > 8 && ad_data < 3600) || pb7_low) {   // AD in button range OR PB7 physically low (the AD may lag behind the WKUP edge)
++    if (in_range || pb7_low) {
 +        release_cnt = 0;
-+        if (ad_data > 8 && ad_data < 3600 && ad_data < cand_min) {
-+            cand_min = ad_data;
-+        }
-+        if (press_cnt < 0xff) {
-+            press_cnt++;
-+        }
-+        if (press_cnt >= need && cand_min != 0xffff) {
-+            press_min = cand_min;      // committed press (fast if WKUP confirms, otherwise after the long debounce)
-+        }
-+    } else if (release_cnt < 5) {         // need ~50ms high to count as a real release
-+        if (++release_cnt >= 5) {
-+            press_min   = 0xffff;
-+            cand_min    = 0xffff;
-+            press_cnt   = 0;
-+        }
-+    }
-+
-+    if (press_min != 0xffff) {
-+        for (i = 0; i < CONFIG_ADKEY_MAX_NUM; i++) {
-+            if ((press_min <= __this->ad_value[i]) && (__this->ad_value[i] < 0xfffL)) {
-+                kv = __this->key_value[i];
-+                break;
++        if (kv == NO_KEY) {
++            /* Poor contact raises the ADC value, so use the minimum while it
++             * settles. Keep the chosen key stable through the contact bounce. */
++            if (in_range && ad_data < cand_min) {
++                cand_min = ad_data;
 +            }
-+        }
-+    }
++            if (press_cnt < 0xff) {
++                press_cnt++;
++            }
++            if (press_cnt >= need) {
++                for (i = 0; i < CONFIG_ADKEY_MAX_NUM; i++) {
++                    if (cand_min <= __this->ad_value[i] && __this->ad_value[i] < 0xfffL) {
++                        kv = __this->key_value[i];
++                        break;
++                    }
++                }
++            }
+         }
++    } else if (release_cnt < 5 && ++release_cnt == 5) {
++        kv = NO_KEY;
++        cand_min = 0xffff;
++        press_cnt = 0;
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++        restart_armed = 1;   /* require a full release after boot or a reset attempt */
++#endif
+     }
 +
 +    /* badge: hand the buttons to whoever owns the UI. */
 +#ifdef CONFIG_BADGE_MENU
 +    /* Menu build: LVGL's keypad indev owns the buttons. Publish the raw key value so
-+     * keypad_read() can poll it (same as the touch); take no action in the driver. */
++     * keypad_read() can poll it like touch input. */
 +    {
 +        extern void badge_adkey_publish(u8 key);
 +        badge_adkey_publish(kv);
@@ -536,8 +529,8 @@ index 240fc6a..71e9a34 100644
 +            } else {
 +                printf("[ADKEY] released\n");
 +            }
-         }
-     }
++        }
++    }
 +#endif
      return NO_KEY;
  }
@@ -5484,7 +5477,7 @@ index 826a990..28f0935 100644
  /*1: Enable Pinyin input method*/
  /*Requires: lv_keyboard*/
 diff --git a/SDK/apps/common/ui/lvgl_v8/lvgl_main.c b/SDK/apps/common/ui/lvgl_v8/lvgl_main.c
-index 8cbf236..4035bde 100644
+index 8cbf236..f3693f5 100644
 --- a/SDK/apps/common/ui/lvgl_v8/lvgl_main.c
 +++ b/SDK/apps/common/ui/lvgl_v8/lvgl_main.c
 @@ -7,6 +7,8 @@
@@ -5524,7 +5517,7 @@ index 8cbf236..4035bde 100644
  
      int msg_p[2 + sizeof(struct key_event) / 4];
  
-@@ -977,8 +991,1617 @@ u8 lvgl_ui_is_suspended(void)
+@@ -977,8 +991,1701 @@ u8 lvgl_ui_is_suspended(void)
      return lvgl_suspend_flag;
  }
  
@@ -5627,6 +5620,78 @@ index 8cbf236..4035bde 100644
 +volatile u8 g_badge_update_active;
 +
 +#ifdef CONFIG_BADGE_MEDIA_UI
++#define BADGE_DISPLAY_TIMEOUT_MS 5000u
++static u8 display_watch_depth, display_watch_armed;
++static u32 display_watch_started;
++static const char *display_watch_operation;
++
++static void badge_display_watch_timeout(void *priv);
++
++static void badge_display_watch_schedule(u32 delay)
++{
++    if (!sys_timeout_add_2_task(NULL, badge_display_watch_timeout, delay, "app_core")) {
++        OS_ENTER_CRITICAL();
++        display_watch_armed = 0;
++        OS_EXIT_CRITICAL();
++        printf("badge LCD: could not schedule recovery\n");
++    }
++}
++
++void badge_display_watch_begin(const char *operation)
++{
++    OS_ENTER_CRITICAL();
++    if (!display_watch_depth++) {
++        display_watch_started = timer_get_ms();
++        display_watch_operation = operation;
++    }
++    u8 schedule = !display_watch_armed;
++    display_watch_armed = 1;
++    OS_EXIT_CRITICAL();
++    if (schedule) badge_display_watch_schedule(BADGE_DISPLAY_TIMEOUT_MS);
++}
++
++void badge_display_watch_end(void)
++{
++    OS_ENTER_CRITICAL();
++    --display_watch_depth;
++    OS_EXIT_CRITICAL();
++}
++
++u8 badge_restart_blocked(void)
++{
++    extern u8 get_ota_status(void);
++    return g_on_update_scr || g_badge_update_active || get_ota_status();
++}
++
++static void badge_display_watch_timeout(void *priv)
++{
++    (void)priv;
++    OS_ENTER_CRITICAL();
++    if (!display_watch_depth) {
++        display_watch_armed = 0;
++        OS_EXIT_CRITICAL();
++        return;
++    }
++    u32 started = display_watch_started;
++    u32 elapsed = timer_get_ms() - started;
++    const char *operation = display_watch_operation;
++    OS_EXIT_CRITICAL();
++
++    if (elapsed < BADGE_DISPLAY_TIMEOUT_MS) {
++        badge_display_watch_schedule(BADGE_DISPLAY_TIMEOUT_MS - elapsed);
++        return;
++    }
++    if (!badge_restart_blocked()) {
++        printf("badge LCD: %s stalled for %u ms\n", operation, (unsigned int)elapsed);
++        OS_ENTER_CRITICAL();
++        if (display_watch_depth && display_watch_started == started && !badge_restart_blocked()) {
++            cpu_reset();
++        }
++        OS_EXIT_CRITICAL();
++    }
++    badge_display_watch_schedule(BADGE_DISPLAY_TIMEOUT_MS);
++}
++
 +/* The BLE stack reads only these state flags, never LVGL objects. */
 +u8 badge_update_diagnostics_enabled(void)
 +{
@@ -6062,11 +6127,11 @@ index 8cbf236..4035bde 100644
 +#endif
 +
 +/* ---- Lock / screensaver: display + touch OFF, CPU running; a hardware key wakes ----
-+ * Boot enters this state; the menu's "Lock" button returns to it. While locked the main
-+ * loop skips LVGL. The E87 key driver signals a debounced press; other profiles poll its value. Waking shows the lock image; a swipe there
-+ * opens the menu. The panel is fully powered down (LCD_POWER_DOWN_EN=1 on this badge), so waking
-+ * needs a full re-init via lcd_reinit_wait_finish(). Heavy LCD ops run from the main loop
-+ * (not inside an LVGL event callback) — the menu button only sets g_badge_lock_req. */
++ * While locked the UI loop skips LVGL. The E87 key driver signals a debounced press
++ * to wake the display; other profiles poll the key value. The panel is fully powered
++ * down (LCD_POWER_DOWN_EN=1), so waking needs lcd_reinit_wait_finish(). The UI loop
++ * handles sleep and wake outside the LVGL event callbacks.
++ */
 +static void badge_lock_enter(void)
 +{
 +    extern int lcd_sleep_ctrl(u8 enter);
@@ -6080,7 +6145,13 @@ index 8cbf236..4035bde 100644
 +    if (g_kp_group) { lv_group_remove_all_objs(g_kp_group); g_kp_single = 0; }  /* keys do nothing on the lock image */
 +    lv_scr_load(g_lock_scr);      /* parks on the image screen (not drawn — the panel goes to sleep) */
 +    badge_touch_set_enable(0);    /* stops touch polling (power saving) */
++#ifdef CONFIG_BADGE_MEDIA_UI
++    badge_display_watch_begin("sleep");
++#endif
 +    lcd_sleep_ctrl(1);            /* backlight 0 + panel to sleep + power down */
++#ifdef CONFIG_BADGE_MEDIA_UI
++    badge_display_watch_end();
++#endif
 +}
 +
 +static void badge_lock_wake(void)
@@ -6090,8 +6161,14 @@ index 8cbf236..4035bde 100644
 +    extern int lcd_drv_backlight_ctrl(u8 percent);
 +    extern void badge_touch_set_enable(u8 en);
 +    printf("lock: wake -> image\n");
++#ifdef CONFIG_BADGE_MEDIA_UI
++    badge_display_watch_begin("wake");
++#endif
 +    lcd_sleep_ctrl(0);            /* powers the panel back on (kicks off the re-init task) */
 +    lcd_reinit_wait_finish();     /* blocks until the panel re-init finishes */
++#ifdef CONFIG_BADGE_MEDIA_UI
++    badge_display_watch_end();
++#endif
 +    lcd_drv_backlight_ctrl(g_bright_pct[g_bright_idx]);   /* backlight back to the saved brightness */
 +    badge_touch_set_enable(1);    /* resumes touch (re-inits the AXS5106L; see board file) */
 +    g_badge_locked = 0;
@@ -6292,6 +6369,7 @@ index 8cbf236..4035bde 100644
 +{
 +    (void)e;
 +    if (badge_ble_battery_gate()) { return; }   /* low battery gate: warn instead of entering OTA mode */
++    g_on_update_scr = 1;
 +    printf("update: enter (BLE on)\n");
 +    g_badge_update_active = 0;
 +    g_badge_mouse_mode = 0;   /* advertise as EC-BADGE */
@@ -6330,7 +6408,6 @@ index 8cbf236..4035bde 100644
 +    lv_obj_set_style_bg_color(g_update_scr, lv_color_hex(0x0000C0), 0);   /* BLUE = v2 (dual-bank A1 OTA marker: v1 was green 0x00A000; blue confirms the 0xC0 OTA applied) */
 +    lv_label_set_text(g_update_lbl, "UPDATE MODE v2\nwaiting for connection\nbutton 1 = back");
 +    lv_scr_load(g_update_scr);
-+    g_on_update_scr = 1;
 +    kp_set_one(g_update_keytgt);
 +}
 +
@@ -6344,9 +6421,9 @@ index 8cbf236..4035bde 100644
 +        extern void sm_set_authentication_requirements(u8 auth_req);
 +        sm_set_authentication_requirements(0x01 | 0x04 /* SM_AUTHREQ_BONDING | MITM_PROTECTION */);
 +    }
-+    g_on_update_scr = 0;
 +    g_ble_want_on = 0;
 +    ble_off();
++    g_on_update_scr = 0;
 +    lv_scr_load(g_settings_scr);
 +    kp_set_settings();
 +}
@@ -7142,7 +7219,7 @@ index 8cbf236..4035bde 100644
  #if LV_USE_MONKEY != 0
      /*Create pointer monkey test*/
      lv_monkey_config_t monkey_pointer_config;
-@@ -1025,7 +2648,9 @@ static void lvgl_main_task(void *priv)
+@@ -1025,7 +2732,9 @@ static void lvgl_main_task(void *priv)
      lv_port_fs_init();
      lv_port_disp_init(priv);
      lv_port_indev_init();
@@ -7153,7 +7230,7 @@ index 8cbf236..4035bde 100644
      lv_ui_src_pack_mode_init();
  
  #if LV_USE_GPU_COMPRESS
-@@ -1054,6 +2679,291 @@ static void lvgl_main_task(void *priv)
+@@ -1054,6 +2763,291 @@ static void lvgl_main_task(void *priv)
  
      ui_sysinfo_init();
  
@@ -7349,8 +7426,8 @@ index 8cbf236..4035bde 100644
 +            /* Live-refresh the device detail scene as GATT discovery results arrive; and
 +             * fail gracefully if the central connect hangs (non-connectable target). */
 +            if (g_scanner_browsing) {
-+                /* Physical Button 2 in this scene = retry the GATT (reconnect + re-discover),
-+                 * debounced (>=1s) so holding the button can't spam reconnections. */
++                /* Button 2 requests one rediscovery per press, at most once per second. */
++
 +                if (g_scanner_retry_req) {
 +                    g_scanner_retry_req = 0;
 +                    if (timer_get_ms() - g_scanner_last_retry_ms > 1000) {
@@ -7497,7 +7574,7 @@ index ee2e4d7..5a64680 100644
  
      /*Later you should create group(s) with `lv_group_t * group = lv_group_create()`,
       *add objects to the group with `lv_group_add_obj(group, obj)`
-@@ -482,8 +499,128 @@ static int ui_scr_key_event_handler(struct key_event *key)
+@@ -482,8 +499,129 @@ static int ui_scr_key_event_handler(struct key_event *key)
  }
  
  /*Will be called by the library to read the mouse*/
@@ -7611,6 +7688,7 @@ index ee2e4d7..5a64680 100644
 +        } else {
 +            lvkey = LV_KEY_NEXT;    /* Button 2 = navigate */
 +        }
++        badge_adkey_consume();     /* One step even if the contact stays closed. */
 +    }
 +    if (lvkey) {
 +        s_last = lvkey;
@@ -7626,6 +7704,33 @@ index ee2e4d7..5a64680 100644
      struct key_event *key_e = (struct key_event *)indev_drv->user_data;
  
      if (ui_scr_key_event_handler(key_e)) {
+diff --git a/SDK/apps/common/ui/lvgl_v8/src/core/lv_refr.c b/SDK/apps/common/ui/lvgl_v8/src/core/lv_refr.c
+index f7a8e7d..744c3d8 100644
+--- a/SDK/apps/common/ui/lvgl_v8/src/core/lv_refr.c
++++ b/SDK/apps/common/ui/lvgl_v8/src/core/lv_refr.c
+@@ -641,6 +641,12 @@ static void refr_invalid_areas(void)
+         return;
+     }
+
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++    extern void badge_display_watch_begin(const char *operation);
++    extern void badge_display_watch_end(void);
++    badge_display_watch_begin("refresh");
++#endif
++
+     /*Find the last area which will be drawn*/
+     int32_t i;
+     int32_t last_i = 0;
+@@ -676,6 +682,9 @@ static void refr_invalid_areas(void)
+     }
+
+     disp_refr->rendering_in_progress = false;
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++    badge_display_watch_end();
++#endif
+ }
+
+ /**
 diff --git a/SDK/apps/common/ui/lvgl_v8/src/draw/sw/lv_draw_sw_letter.c b/SDK/apps/common/ui/lvgl_v8/src/draw/sw/lv_draw_sw_letter.c
 --- a/SDK/apps/common/ui/lvgl_v8/src/draw/sw/lv_draw_sw_letter.c
 +++ b/SDK/apps/common/ui/lvgl_v8/src/draw/sw/lv_draw_sw_letter.c
@@ -16520,7 +16625,7 @@ diff --git a/SDK/apps/watch/app_main.c b/SDK/apps/watch/app_main.c
 index eb881b5..d6f36ed 100644
 --- a/SDK/apps/watch/app_main.c
 +++ b/SDK/apps/watch/app_main.c
-@@ -73,6 +73,11 @@ const struct task_info task_info_table[] = {
+@@ -73,6 +73,12 @@ const struct task_info task_info_table[] = {
  #if TCFG_PAY_TRANSITCODE_ENABLE
      //乘车码应用使用完要kill 任务 对栈占用厉害
      {"transitcode",         1,      0,  2048 + 2048 + 2048 + 1024,  512 },
@@ -16529,10 +16634,11 @@ index eb881b5..d6f36ed 100644
 +    {"axs_poll",            8 + TASK_PRIO_BASE,     0,   512,   0   },  // badge: AXS5106L touch poll task (LVGL menu)
 +#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
 +    {"badge_decode",        2 + TASK_PRIO_BASE,     0,  1536,   0   },
++    {"badge_opp",           2 + TASK_PRIO_BASE,     0,  768,    0   },
  #endif
      {"btctrler",            4 + TASK_PRIO_BASE,     0,   512,   512 },
      {"btencry",             1 + TASK_PRIO_BASE,     0,   512,   128 },
-@@ -116,7 +121,7 @@ const struct task_info task_info_table[] = {
+@@ -116,7 +122,7 @@ const struct task_info task_info_table[] = {
      {"update",				1 + TASK_PRIO_BASE,	   0,   512,   0   },
      {"tws_ota",				2 + TASK_PRIO_BASE,	   0,   256,   0   },
      {"tws_ota_msg",			2 + TASK_PRIO_BASE,	   0,   256,   128 },
@@ -16541,7 +16647,7 @@ index eb881b5..d6f36ed 100644
      {"aud_capture",         4 + TASK_PRIO_BASE,     0,   512,   256 },
      {"data_export",         5 + TASK_PRIO_BASE,     0,   512,   256 },
      {"anc",                 3 + TASK_PRIO_BASE,     0,   512,   128 },
-@@ -310,9 +315,17 @@ void arch_trim()
+@@ -310,9 +316,17 @@ void arch_trim()
  
  }
  
@@ -16841,7 +16947,7 @@ index e006cb3..d766ac7 100644
  #if TCFG_APP_RTC_EN
      rtc_dev_init(&rtc_dev_config);
  #endif
-@@ -683,6 +692,642 @@ void board_gpio_config_soft_poweroff(u32 *gpio_config)
+@@ -683,6 +692,653 @@ void board_gpio_config_soft_poweroff(u32 *gpio_config)
  }
  
  
@@ -17372,13 +17478,24 @@ index e006cb3..d766ac7 100644
 +static volatile u32 g_tp_cxy = 0;      /* (x << 16) | y */
 +
 +
++static u8 badge_touch_init(void)
++{
++    u8 ready = badge_tp_init() == 0;
++#ifdef CONFIG_BADGE_BOARD_E87
++    if (!ready && g_axs_want) {
++        os_time_dly(50);   /* let the shared LCD and touch rail settle */
++        if (g_axs_want && !g_tp_reinit_req)
++            ready = badge_tp_init() == 0;
++    }
++#endif
++    if (!ready) printf("touch: init failed\n");
++    return ready;
++}
++
 +static void axs_poll_task(void *priv)
 +{
 +    (void)priv;
-+    g_axs_ready = (badge_tp_init() == 0);
-+    if (!g_axs_ready) {
-+        printf("touch: init failed\n");
-+    }
++    g_axs_ready = badge_touch_init();
 +    while (1) {
 +        if (g_tp_reinit_req && g_axs_want) {
 +            /* Wake path: suspend cut the shared LCD/TP rail, so the controller lost all its
@@ -17386,7 +17503,7 @@ index e006cb3..d766ac7 100644
 +             * in badge_touch_set_enable so that this task is the ONLY thing that ever drives
 +             * the bus -- no concurrent transactions, no half-finished ones. */
 +            g_tp_reinit_req = 0;
-+            g_axs_ready = (badge_tp_init() == 0);
++            g_axs_ready = badge_touch_init();
 +            g_tp_cdown = 0;
 +        }
 +        if (g_axs_ready && g_axs_want) {
@@ -26282,7 +26399,7 @@ index 2beb3a0..2472ca9 100644
  #endif
      }
  #if (TCFG_BT_BACKGROUND_ENABLE)
-@@ -1139,6 +1166,40 @@ static int bt_init_bredr_do(int priv)
+@@ -1139,6 +1166,42 @@ static int bt_init_bredr_do(int priv)
      return 0;
  }
  
@@ -26309,10 +26426,12 @@ index 2beb3a0..2472ca9 100644
 +    if (os_sem_create(&done, 0)) return -1;
 +    int args[] = {(int)badge_bredr_transition, 2, on, (int)&done};
 +    int err;
++    unsigned attempts = 100;
 +    do {
 +        err = os_taskq_post_type("app_core", Q_CALLBACK, 4, args);
-+        if (err == OS_Q_FULL) os_time_dly(1);
-+    } while (err == OS_Q_FULL);
++        if (err != OS_Q_FULL) break;
++        os_time_dly(1);
++    } while (--attempts);
 +    /* BLE maintenance may start as soon as the Receive screen returns. */
 +    if (!err) os_sem_pend(&done, 0);
 +    os_sem_del(&done, OS_DEL_NO_PEND);
@@ -26323,7 +26442,7 @@ index 2beb3a0..2472ca9 100644
  static int bredr_conn_last_dev_do(int priv)
  {
      u16 do_cnt = priv;
-@@ -1348,6 +1409,62 @@ u8 is_bredr_close(void)
+@@ -1348,6 +1411,62 @@ u8 is_bredr_close(void)
      printf("%s,g_bt_hdl.bt_close_bredr=%d", __func__, g_bt_hdl.bt_close_bredr);
      return g_bt_hdl.bt_close_bredr;
  }

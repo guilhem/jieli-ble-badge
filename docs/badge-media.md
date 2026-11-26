@@ -76,6 +76,10 @@ Set `BADGE_ADDRESS` to the address of your badge. The command prints the respons
 
 For boot and controller logs, connect the board's PA4 debug TX to RX on a 3.3 V USB–UART adapter and connect the grounds. Leave the adapter's TX and power pins disconnected. Use the adapter's device path with `picocom -b 115200 /dev/ttyUSB0`. The firmware exposes UART transmit output only.
 
+To force an E87 restart, release both physical buttons, then hold them together for five seconds. The button scanner handles the gesture even if the menu is frozen. Release both buttons after the restart to re-arm it.
+
+If a redraw, display sleep, or display wake stalls for five seconds, the E87 logs the operation and restarts. Both restart mechanisms are suspended while Update is open or a firmware update is active.
+
 ## Prepare a clip
 
 On a computer with Python and Pillow, run this from the repository root with an animated `loop.gif`. Then send `loop.avi` from Bluetooth settings.
@@ -99,6 +103,7 @@ PY
 3. Cancel an upload on the badge and interrupt another from the sender. Check that the last media is still available. Fill the gallery, delete an item, and retry.
 4. On battery power, measure average current with the same still photo at 30% and 50% brightness. Compare each setting with the previous firmware over the same interval after inactivity has settled. Repeat with the display locked, then wake it with each button. Record first-gesture latency, missed presses, video frame rate and file transfer time.
 5. Check that charging leaves the media visible and that a firmware update preserves the gallery.
+6. Open the Badge menu with the navigation button. Hold that button and check that focus advances once and touch still works. Release it, tap it again, then use the other button to select the focused item. Repeat immediately after waking the display.
 
 With the patched SDK, a host C compiler, Python, and Pillow, run the simulated tests from the repository root.
 
@@ -108,4 +113,4 @@ BADGE_OPP_SDK=tools/community-re/jieli-sdks/e_badge_707_sdk_200 \
   python3 -m unittest discover -s firmware/badge-media/tests
 ```
 
-These tests exercise decoding, SVG placement and timing, the receive state machine, and simulated flash. The transfers, installed update, and current draw require a physical E87.
+These tests exercise decoding, SVG placement and timing, debounced button input, the receive state machine, and simulated flash. The transfers, installed update, and current draw require a physical E87.

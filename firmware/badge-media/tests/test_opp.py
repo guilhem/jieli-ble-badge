@@ -13,11 +13,24 @@ WRAPPER = r'''
 #include <assert.h>
 #include <string.h>
 typedef unsigned OS_MUTEX;
+typedef unsigned OS_SEM;
 #define OS_ENTER_CRITICAL() ((void)0)
 #define OS_EXIT_CRITICAL() ((void)0)
 static int os_mutex_create(OS_MUTEX *m) { *m = 0; return 0; }
-static void os_mutex_pend(OS_MUTEX *m, int t) { (void)t; assert(!*m); *m = 1; }
+static int os_mutex_pend(OS_MUTEX *m, int t) {
+    if (*m && t) return 1;
+    assert(!*m); *m = 1; return 0;
+}
 static void os_mutex_post(OS_MUTEX *m) { assert(*m); *m = 0; }
+static void os_mutex_del(OS_MUTEX *m, int t) { (void)m; (void)t; assert(0); }
+static int os_sem_create(OS_SEM *s, int n) { *s = n; return 0; }
+static void os_sem_del(OS_SEM *s, int t) { (void)s; (void)t; assert(0); }
+static void os_sem_post(OS_SEM *s) { ++*s; }
+static void os_sem_pend(OS_SEM *s, int t) { (void)s; (void)t; assert(0); }
+static int task_create(void (*fn)(void *), void *arg, const char *name) {
+    assert(fn && !arg && !strcmp(name, "badge_opp"));
+    return 0;
+}
 static uint32_t tick;
 static unsigned credit, response, bonded, encrypted, accepts, link_up;
 unsigned auth_requests, negative_replies, other_rejections, classic, stack_wakes;
@@ -33,8 +46,19 @@ static void lmp_hci_user_confirmation_request_negative_reply(uint8_t *a) {
     else { assert(!memcmp(a, remote, 6)); ++negative_replies; }
 }
 static void lmp_hci_authentication_requested(uint8_t *a);
+#define badge_opp_start queue_start
+#define badge_opp_stop queue_stop
+#define badge_opp_confirm queue_confirm
 #include "badge_opp.c"
-unsigned bytes_written, begins, commits, cancels, advertised;
+#undef badge_opp_start
+#undef badge_opp_stop
+#undef badge_opp_confirm
+void badge_opp_start(void) { queue_start(); control_step(); }
+void badge_opp_stop(void) { queue_stop(); control_step(); }
+void badge_opp_confirm(uint32_t number) { control_step(); queue_confirm(number); control_step(); }
+unsigned bytes_written, begins, commits, cancels, advertised, opens, closes;
+int space_error, close_error, cancel_on_start;
+int badge_media_store_check_space(void) { return space_error; }
 static rfcomm_handler emit;
 void rfcomm_register_service_internal(void *unused, rfcomm_handler cb, uint8_t ch, uint16_t sz) {
     (void)unused; assert(ch == 5 && sz >= 255); emit = cb;
@@ -57,7 +81,16 @@ void stack_run_loop_register(struct run_loop *loop, void (*run)(struct run_loop 
 void stack_run_loop_resume(void) { assert(!mutex); ++stack_wakes; }
 unsigned run_stack(void) { registered_loop->run(registered_loop); return response; }
 int badge_opp_set_bredr(int on) {
-    assert(!mutex && badge_opp_classic_enabled() == on); classic = on; return 0;
+    assert(!mutex && badge_opp_classic_enabled() == on);
+    if (on) {
+        ++opens;
+        if (cancel_on_start) queue_stop();
+    } else {
+        ++closes;
+        if (close_error) return close_error;
+    }
+    classic = on;
+    return 0;
 }
 static void lmp_hci_authentication_requested(uint8_t *a) {
     assert(!mutex && !memcmp(a, remote, 6));
@@ -65,7 +98,11 @@ static void lmp_hci_authentication_requested(uint8_t *a) {
     if (!bonded) badge_opp_pair_request(a, 12345);
 }
 void security(unsigned has_bond, unsigned has_encryption) { bonded = has_bond; encrypted = has_encryption; }
-unsigned phase(void) { return badge_opp_poll().state; }
+unsigned phase(void) { control_step(); return badge_opp_poll().state; }
+unsigned view_phase(void) { return badge_opp_poll().state; }
+int view_stalled(void) { return badge_opp_poll().stalled; }
+void hold_import_mutex(void) { os_mutex_pend(&mutex, 0); }
+void release_import_mutex(void) { os_mutex_post(&mutex); }
 void elapse(unsigned ms) { tick += ms; }
 void lose_acl(void) { link_up = 0; }
 void pair_directly(void) { badge_opp_pair_request(remote, 12345); }
@@ -92,7 +129,9 @@ void open_channel(void) {
     emit(4,0x43,incoming,sizeof(incoming)); emit(4,0x43,opened,sizeof(opened));
 }
 void open_window(void) {
+    space_error = close_error = cancel_on_start = 0;
     badge_opp_bt_ready(); badge_opp_stop(); badge_opp_start(); open_channel();
+    opens = closes = 0;
     bonded = encrypted = credit = 1; accepts = tick = 0;
     auth_requests = response = negative_replies = other_rejections = stack_wakes = 0;
     bytes_written = begins = commits = cancels = 0;
@@ -114,11 +153,11 @@ unsigned grant_credit(void) {
     uint8_t event[] = {0x84,3,1,0,1}; credit = 1;
     emit(4,0x43,event,sizeof(event)); return response;
 }
-int stored_slot(void) { tick += 1001; return badge_opp_poll().slot; }
+int stored_slot(void) { tick += 1001; control_step(); return badge_opp_poll().slot; }
 void close_channel(void) { uint8_t e[] = {0x81,8,1,0,6,5,4,3,2,1}; emit(4,0x43,e,sizeof(e)); }
 int pair_check(void) {
     badge_opp_pair_request(remote,12345);
-    assert(badge_opp_poll().state == BADGE_OPP_PAIRING);
+    assert(phase() == BADGE_OPP_PAIRING);
     badge_opp_confirm(12346); assert(!accepts);
     badge_opp_confirm(12345); return accepts;
 }
@@ -209,6 +248,60 @@ class ObjectPush(unittest.TestCase):
 
     def connect(self, secure=True):
         return self.exchange(0x80, b'\x10\0\x04\0', secure)
+
+    def test_cancel_leaves_the_ui_responsive_during_an_import(self):
+        self.assertEqual(self.connect(), 0xa0)
+        self.assertEqual(self.exchange(2, name('a.txt') + header(0x48, b'ab')), 0x90)
+        self.assertEqual(self.lib.phase(), 3)  # Receiving
+        self.lib.hold_import_mutex()
+        try:
+            self.lib.queue_stop()
+            self.lib.queue_stop()
+            self.assertEqual(self.lib.view_phase(), 8)  # Stopping
+            self.lib.elapse(5000)
+            self.assertEqual(self.lib.view_stalled(), 1)
+            self.assertEqual((self.val('classic'), self.val('cancels')), (1, 0))
+        finally:
+            self.lib.release_import_mutex()
+        self.assertEqual(self.lib.phase(), 0)
+        self.assertEqual((self.val('classic'), self.val('cancels'), self.val('closes')), (0, 1, 1))
+
+    def test_early_cancel_is_serialized_with_classic_startup(self):
+        self.lib.badge_opp_stop()
+        self.lib.queue_start()
+        self.assertEqual(self.lib.view_phase(), 7)  # Starting
+        self.lib.queue_stop()
+        self.assertEqual(self.lib.phase(), 0)
+        self.assertEqual((self.val('opens'), self.val('closes')), (0, 1))
+        ctypes.c_int.in_dll(self.lib, 'cancel_on_start').value = 1
+        self.lib.queue_start()
+        self.assertEqual(self.lib.phase(), 8)  # Start completed, Cancel is still pending
+        self.assertEqual(self.val('classic'), 1)
+        self.assertEqual(self.lib.phase(), 0)
+        self.assertEqual((self.val('opens'), self.val('closes'), self.val('classic')), (1, 2, 0))
+
+    def test_saved_item_waits_for_controller_shutdown(self):
+        self.assertEqual(self.connect(), 0xa0)
+        self.assertEqual(self.exchange(0x82, name('a.txt') + header(0x49, b'hello')), 0xa0)
+        self.assertEqual(self.lib.phase(), 3)
+        ctypes.c_int.in_dll(self.lib, 'close_error').value = 1
+        self.lib.elapse(1001)
+        self.assertEqual(self.lib.phase(), 3)  # Do not navigate away from the receive screen
+        self.lib.queue_start()  # A late request must not start a new session
+        self.assertEqual((self.val('opens'), self.val('commits')), (0, 1))
+        ctypes.c_int.in_dll(self.lib, 'close_error').value = 0
+        self.assertEqual(self.lib.phase(), 4)
+        self.assertEqual(self.lib.stored_slot(), 2)
+        self.assertEqual(self.val('classic'), 0)
+
+    def test_storage_preflight_does_not_start_bluetooth(self):
+        self.lib.badge_opp_stop()
+        ctypes.c_int.in_dll(self.lib, 'space_error').value = -2
+        self.lib.queue_start()
+        self.assertEqual(self.lib.view_phase(), 7)
+        self.assertEqual(self.lib.phase(), 5)
+        self.assertEqual(self.val('opens'), 0)
+        self.assertEqual(self.diagnostic(), ('storage_preflight', -2, 0, 0))
 
     def test_single_final_put(self):
         self.assertEqual(self.connect(), 0xa0)

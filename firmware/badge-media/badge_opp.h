@@ -6,7 +6,7 @@
 enum badge_opp_state {
     BADGE_OPP_OFF, BADGE_OPP_WAITING, BADGE_OPP_PAIRING,
     BADGE_OPP_RECEIVING, BADGE_OPP_DONE, BADGE_OPP_FAILED,
-    BADGE_OPP_SECURING
+    BADGE_OPP_SECURING, BADGE_OPP_STARTING, BADGE_OPP_STOPPING
 };
 
 enum badge_opp_error {
@@ -20,6 +20,7 @@ struct badge_opp_status {
     uint32_t number;
     int slot;
     int error;
+    int stalled;
 };
 
 const char *badge_opp_name(void);
