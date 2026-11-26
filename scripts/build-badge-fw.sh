@@ -30,6 +30,9 @@ readonly NEEDED_ULIMIT=65536
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly SDK_ROOT="${REPO_ROOT}/${SDK_REL}"
 readonly SDK_DIR="${SDK_ROOT}/SDK"
+TOOL_DIR="${REPO_ROOT}/tools/jieli-toolchain/pi32v2/bin"
+[[ -x "${TOOL_DIR}/clang" ]] || TOOL_DIR="/opt/jieli/pi32v2/bin"
+readonly TOOL_DIR
 
 BOARD="e87"
 CHIPKEY_ID=""          # empty = per-board default (see below)
@@ -88,8 +91,8 @@ esac
 readonly BOARD CHIPKEY_ID OTA_STEM
 
 # --- prerequisites --------------------------------------------------------
-[[ -x /opt/jieli/pi32v2/bin/clang ]] \
-    || fail "pi32v2 toolchain not at /opt/jieli/pi32v2 — run scripts/setup-badge-build.sh"
+[[ -x "${TOOL_DIR}/clang" ]] \
+    || fail "pi32v2 toolchain missing — run scripts/setup-badge-build.sh"
 [[ -f "${SDK_DIR}/Makefile" ]] \
     || fail "SDK not checked out at ${SDK_REL} — run scripts/setup-badge-build.sh"
 
@@ -127,27 +130,36 @@ if [[ "$(ulimit -n)" -lt "${NEEDED_ULIMIT}" ]]; then
     log "raised ulimit -n to $(ulimit -n)"
 fi
 
-export PATH="/opt/jieli/pi32v2/bin:${PATH}"
+export PATH="${TOOL_DIR}:${PATH}"
 
 # --- build ----------------------------------------------------------------
-make_args=(BOARD="${BOARD}")
+make_args=(BOARD="${BOARD}" TOOL_DIR="${TOOL_DIR}")
 [[ "${MENU}" == 1 ]] && make_args+=(MENU=1)
 [[ "${CHIPKEY_ID}" != "none" ]] && export BADGE_CHIPKEY="${CHIPKEY_ID}"
 # download.sh reads this to decide whether to pass -ex_api_bin. The -D on the
 # make line is the source of truth; this is belt-and-braces for a hand-run download.sh.
 export BADGE_BOARD="${BOARD}"
 
+if [[ "${BOARD}" == e87 && "${MENU}" == 1 ]]; then
+    for source in "${REPO_ROOT}"/firmware/badge-media/*.[ch]; do
+        target="${SDK_DIR}/apps/common/ui/lvgl_v8/${source##*/}"
+        if ! cmp -s "${source}" "${target}"; then
+            install -m 0644 "${source}" "${target}"
+        fi
+    done
+fi
+
 readonly APP_BIN="${SDK_DIR}/cpu/br35/tools/app.bin"
 readonly BOARD_STAMP="${SDK_DIR}/${BOARD_STAMP_REL}"
 rm -f "${APP_BIN}"
 
-# BOARD only changes -D defines, which this SDK's Makefile does not track as a
-# dependency — an incremental build after a board switch would silently mix objects
-# from both panels. Stamp the board and force a clean whenever it changes.
-prev_board=""
-[[ -f "${BOARD_STAMP}" ]] && prev_board="$(cat "${BOARD_STAMP}")"
-if [[ -n "${prev_board}" && "${prev_board}" != "${BOARD}" ]]; then
-    log "board changed ${prev_board} -> ${BOARD}: forcing a full rebuild"
+# BOARD and MENU change defines and the source list. The linker takes every
+# object in objs/, so changing either requires a clean build.
+build_config="${BOARD}:${MENU}"
+previous_config=""
+[[ -f "${BOARD_STAMP}" ]] && previous_config="$(cat "${BOARD_STAMP}")"
+if [[ -d "${SDK_DIR}/objs" && "${previous_config}" != "${build_config}" ]]; then
+    log "build configuration changed ${previous_config:-unknown} -> ${build_config}: forcing a full rebuild"
     DO_CLEAN=1
 fi
 
@@ -161,7 +173,7 @@ if ! make -C "${SDK_DIR}" "${make_args[@]}"; then
     rm -f "${BOARD_STAMP}"      # unknown object mix — make the next run clean
     fail "make failed"
 fi
-printf '%s' "${BOARD}" > "${BOARD_STAMP}"
+printf '%s' "${build_config}" > "${BOARD_STAMP}"
 
 # --- verify ---------------------------------------------------------------
 [[ -s "${APP_BIN}" ]] || fail "the build reported success but produced no app.bin"

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 800 262" role="img" aria-labelledby="title desc">
+  <title id="title">How the E87 frames a landscape photo</title>
+  <desc id="desc">A dotted circle marks the center of a wide landscape. The round badge displays that part of the image, keeping the sun and the central peaks.</desc>
+  <defs>
+    <g id="landscape">
+      <path fill="#f8d8a1" d="M0 0h350v162H0z"/>
+      <circle cx="190" cy="54" r="27" fill="#e66846"/>
+      <path fill="#78918b" d="m0 98 39-26 32 14 55-44 57 49 30-20 35 16 48-42 54 38v79H0z"/>
+      <path fill="#3c7777" d="m0 114 61-29 36 16 42-24 34 13 22-11 37 16 38-23 80 27v63H0z"/>
+      <path fill="#163f46" d="M0 134q48-29 104-11t102-6q70-27 144 6v39H0z"/>
+      <path fill="#eab66f" d="M165 119q34 2 6 12t15 12q22 3 20 19h-25q8-9-8-14-38-9-11-18 24-7 3-11z"/>
+    </g>
+    <clipPath id="card"><rect x="41" y="24" width="350" height="162" rx="8"/></clipPath>
+    <clipPath id="display"><circle cx="609" cy="105" r="81"/></clipPath>
+  </defs>
+  <rect width="800" height="262" rx="18" fill="#10282e"/>
+  <g clip-path="url(#card)">
+    <use xlink:href="#landscape" x="41" y="24"/>
+    <circle cx="216" cy="105" r="79" fill="none" stroke="#fff6df" stroke-width="2.5" stroke-dasharray="6 5"/>
+  </g>
+  <path d="M422 105h58m-13-12 13 12-13 12" fill="none" stroke="#a3c0bc" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="609" cy="105" r="87" fill="#10282e" stroke="#72908f" stroke-width="2"/>
+  <g clip-path="url(#display)">
+    <use xlink:href="#landscape" x="434" y="24"/>
+  </g>
+  <g fill="#fff5df" font-family="system-ui, sans-serif" font-size="28" font-weight="600" text-anchor="middle">
+    <text x="216" y="226">Shared JPEG</text>
+    <text x="609" y="226">Round display</text>
+  </g>
+</svg>

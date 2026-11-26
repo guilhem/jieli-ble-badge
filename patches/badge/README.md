@@ -1,7 +1,7 @@
 # badge-menu patch
 
-Custom **badge-menu firmware** (LVGL touch UI + BLE tools) for the JieLi AC707N/BR35, kept as a
-patch on top of the **vanilla** JieLi watch SDK. The SDK itself is **not** stored here — it is the
+The **badge-menu firmware** provides the E87 media gallery and the Bluetooth tools on the JieLi
+AC707N/BR35. This patch integrates them with the **vanilla** JieLi watch SDK. The SDK is the
 git submodule at `tools/community-re/jieli-sdks/e_badge_707_sdk_200` (JieLi's GitLab, pinned at the
 vanilla `main` commit `d016768`, clonable anonymously). This keeps JieLi's SDK out of this repo
 while making the custom work reproducible.
@@ -24,8 +24,8 @@ scripts/setup-badge-build.sh          # once
 scripts/build-badge-fw.sh --ota       # each build
 ```
 
-Full guide, provenance of every downloaded piece, and a troubleshooting table:
-**[docs/build-badge-firmware.md](../../docs/build-badge-firmware.md)**.
+The build copies the E87 media sources from `firmware/badge-media/` into the SDK. See the
+[build guide](../../docs/build-badge-firmware.md) and the [media guide](../../docs/badge-media.md).
 
 By hand, the same thing:
 
@@ -44,6 +44,7 @@ git -C "$SDK" apply "$PWD/patches/badge/badge-menu.patch"
 # 4. Build (needs the pi32v2 toolchain on PATH and a high open-file limit)
 export PATH="/opt/jieli/pi32v2/bin:$PATH"
 ulimit -n 65536
+cp firmware/badge-media/*.[ch] "$SDK/SDK/apps/common/ui/lvgl_v8/"
 ( cd "$SDK/SDK" && make clean && BADGE_CHIPKEY=9847 make MENU=1 )
 # -> SDK/cpu/br35/tools/app.bin  +  SDK/output/{update.ufw,jl_isd.fw,jl_isd.bin}
 ```
@@ -72,6 +73,7 @@ From the working SDK tree (vanilla + your changes), at the SDK repo root:
 git add -A -- ':!SDK/tools/linux' ':!output' ':!SDK/output'
 git diff --cached -- ':!*.a' ':!*.bin' ':!SDK/tools/linux/**' ':!*.cbp' ':!**/*.bat' \
   ':!**/json.txt' ':!SDK/build/fileList.dumy' ':!output/**' ':!SDK/output/**' \
+  ':!SDK/apps/common/ui/lvgl_v8/badge_media_*' ':!SDK/apps/common/ui/lvgl_v8/badge_opp.*' \
   > ../../../../patches/badge/badge-menu.patch
 git reset
 ```
