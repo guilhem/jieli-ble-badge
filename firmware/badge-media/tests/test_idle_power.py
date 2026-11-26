@@ -95,6 +95,88 @@ int main(void) {
 '''
         compile_and_run(source)
 
+    def test_held_press_keeps_the_ui_loop_running(self):
+        lvgl = SDK / 'SDK/apps/common/ui/lvgl_v8'
+        ui = (lvgl / 'lvgl_main.c').read_text()
+        keypad = (lvgl / 'porting/lv_port_indev.c').read_text()
+        start = ui.index('/* Lock / screensaver control + hardware buttons. */')
+        lock_paths = ui[start:ui.index('/* Update screen:', start)]
+        functions = [function(keypad, name) for name in (
+            'void badge_adkey_publish(', 'u8 badge_adkey_read(', 'void badge_adkey_consume(')]
+        start = keypad.index('static void keypad_read(', keypad.index('void badge_adkey_consume('))
+        end = keypad.index('    struct key_event', start)
+        functions.append(keypad[start:end].replace('\n{', '\n{\n    (void)indev_drv;', 1) + '}')
+        source = r'''
+#include <assert.h>
+#include <stddef.h>
+#include <stdint.h>
+#define CONFIG_BADGE_MENU 1
+#define CONFIG_BADGE_MEDIA_UI 1
+#define NO_KEY 255
+#define KEY_AD_NUM0 0
+#define KEY_AD_NUM1 1
+#define LV_KEY_ENTER 10
+#define LV_KEY_NEXT 11
+#define LV_INDEV_STATE_REL 0
+#define LV_INDEV_STATE_PR 1
+typedef uint8_t u8;
+typedef int lv_obj_t;
+typedef int lv_indev_drv_t;
+typedef struct { unsigned int key; int state; } lv_indev_data_t;
+static volatile u8 g_badge_adkey_kv = NO_KEY, badge_adkey_consumed;
+static volatile unsigned char g_scanner_detail_active, g_scanner_retry_req;
+static u8 g_badge_locked, media_input_ready, media_pending_key = NO_KEY;
+static int media_input, refreshes, screen_home = 1, screen_menu;
+static lv_indev_data_t keypad_state;
+static lv_obj_t *g_lock_scr = &screen_home, *active_screen = &screen_home;
+static lv_obj_t *lv_scr_act(void) { return active_screen; }
+static void badge_lock_wake(void) { g_badge_locked = 0; }
+static void badge_lock_enter(void) { g_badge_locked = 1; }
+static void badge_media_ui_menu(void) { active_screen = &screen_menu; }
+static u8 badge_media_take_key(void) {
+    u8 key = media_pending_key;
+    media_pending_key = NO_KEY;
+    return key;
+}
+static void os_sem_pend(int *sem, int ticks) { (void)sem; (void)ticks; assert(0); }
+static void os_time_dly(int ticks) { assert(ticks == 3); }
+''' + '\n'.join(functions) + r'''
+static void ui_tick(void) {
+    do {
+''' + lock_paths + r'''
+        keypad_read(NULL, &keypad_state);
+        ++refreshes;
+    } while (0);
+}
+int main(void) {
+    badge_adkey_publish(KEY_AD_NUM1);
+    ui_tick();
+    assert(active_screen == &screen_menu && refreshes == 1);
+    assert(keypad_state.state == LV_INDEV_STATE_REL);
+    badge_adkey_publish(KEY_AD_NUM0);
+    ui_tick();
+    assert(refreshes == 2 && keypad_state.state == LV_INDEV_STATE_REL);
+    badge_adkey_publish(NO_KEY);
+    badge_adkey_publish(KEY_AD_NUM0);
+    ui_tick();
+    assert(keypad_state.state == LV_INDEV_STATE_PR && keypad_state.key == LV_KEY_ENTER);
+
+    active_screen = g_lock_scr;
+    g_badge_locked = media_input_ready = 1;
+    media_pending_key = KEY_AD_NUM0;
+    ui_tick();
+    assert(!g_badge_locked && refreshes == 3);
+    ui_tick();
+    assert(refreshes == 4 && !g_badge_locked && keypad_state.state == LV_INDEV_STATE_REL);
+
+    badge_adkey_publish(NO_KEY);
+    badge_adkey_publish(KEY_AD_NUM1);
+    ui_tick();
+    assert(active_screen == &screen_menu && refreshes == 5);
+}
+'''
+        compile_and_run(source)
+
     def test_only_a_quiet_still_view_parks(self):
         media = (ROOT / 'firmware/badge-media/badge_media_ui.c').read_text()
         source = r'''
