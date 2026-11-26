@@ -369,15 +369,26 @@ int main(void) {
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-static bool hint, receiving, playing, other_screen, running_animation;
+#include <string.h>
+typedef uint8_t u8;
+static bool hint, receiving, playing, running_animation;
 static int refreshes, svg_frames, video_frames;
+static int active_screen, panel = 1, heading, *menu_heading;
+static int menu_battery_percent, battery_reads, battery_redraws;
+static uint32_t menu_battery_checked_ms;
+static u8 battery = 74;
 static uint32_t now, hint_started_ms, next_frame_ms = 1;
 static int home, clip, image, badge_media_pixels;
 static struct { bool animating; } svg;
 static unsigned int timer_get_ms(void) { return now; }
 static void dismiss_hint(void) { hint = false; }
 static void refresh_receive(void) { ++refreshes; }
-static int lv_scr_act(void) { return other_screen ? 1 : home; }
+static int lv_scr_act(void) { return active_screen; }
+u8 get_vbat_percent(void) { ++battery_reads; return battery; }
+static void lv_label_set_text_fmt(int *label, const char *format, unsigned int percent) {
+    assert(label == &heading && !strcmp(format, "Badge  |  Battery %u%%") && percent == battery);
+    ++battery_redraws;
+}
 static void update_svg(void) { ++svg_frames; }
 static unsigned int lv_disp_get_inactive_time(void *disp) { (void)disp; return now; }
 static bool lv_anim_count_running(void) { return running_animation; }
@@ -386,7 +397,8 @@ static void badge_avi_rewind(int *avi) { (void)avi; }
 static void show_text(const char *s) { (void)s; }
 static void lv_obj_invalidate(int obj) { (void)obj; }
 static void advance_frame_clock(void) {}
-''' + function(media, 'unsigned int badge_media_ui_tick(') + r'''
+''' + '\n'.join(function(media, name) for name in (
+            'static void refresh_menu_battery(', 'unsigned int badge_media_ui_tick(')) + r'''
 int main(void) {
     now = 1999;
     assert(badge_media_ui_tick() == 1);
@@ -395,14 +407,35 @@ int main(void) {
     running_animation = true;
     assert(badge_media_ui_tick() == 1);
     running_animation = false;
-    other_screen = receiving = true;
+    receiving = true;
+    active_screen = panel;
     assert(badge_media_ui_tick() == 1 && refreshes == 1);
-    other_screen = receiving = false;
+    receiving = false;
+    active_screen = home;
     svg.animating = true;
     assert(badge_media_ui_tick() == 1 && svg_frames == 1);
     svg.animating = false;
     playing = true;
     assert(badge_media_ui_tick() == 1 && video_frames == 1);
+
+    menu_heading = &heading;
+    menu_battery_percent = -1;
+    active_screen = panel;
+    refresh_menu_battery();
+    assert(menu_battery_percent == 74 && battery_reads == 1 && battery_redraws == 1);
+    now += 999;
+    assert(badge_media_ui_tick() == 1 && battery_reads == 1);
+    ++now;
+    assert(badge_media_ui_tick() == 1 && battery_reads == 2 && battery_redraws == 1);
+    battery = 73;
+    now += 1000;
+    assert(badge_media_ui_tick() == 1 && battery_reads == 3 && battery_redraws == 2);
+    active_screen = home;
+    now += 1000;
+    assert(badge_media_ui_tick() == 1 && battery_reads == 3);
+    menu_heading = NULL;
+    active_screen = panel;
+    assert(badge_media_ui_tick() == 1 && battery_reads == 3);
 }
 '''
         compile_and_run(source)
