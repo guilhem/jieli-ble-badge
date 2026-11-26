@@ -153,8 +153,7 @@ readonly APP_BIN="${SDK_DIR}/cpu/br35/tools/app.bin"
 readonly BOARD_STAMP="${SDK_DIR}/${BOARD_STAMP_REL}"
 rm -f "${APP_BIN}"
 
-# BOARD and MENU change defines and the source list. The linker takes every
-# object in objs/, so changing either requires a clean build.
+# BOARD and MENU change compiler defines, which the SDK's object rules do not track.
 build_config="${BOARD}:${MENU}"
 previous_config=""
 [[ -f "${BOARD_STAMP}" ]] && previous_config="$(cat "${BOARD_STAMP}")"

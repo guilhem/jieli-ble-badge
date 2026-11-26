@@ -1,5 +1,6 @@
 #include "badge_media_store.h"
 #include "badge_svg.h"
+#include "system/includes.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -60,6 +61,9 @@ _Static_assert(BADGE_MEDIA_PIXELS * sizeof(uint16_t) <= SMALL_SLOT - sizeof(stru
 static struct badge_media_item items[BADGE_MEDIA_SLOTS];
 static int pending_slot = -1;
 static struct slot_header pending;
+enum { HINT_UNKNOWN = -2, HINT_SCANNING = -1 };
+/* Only the gallery UI publishes a hint. Flash checks still authorize every write. */
+static int preparation_hint = HINT_UNKNOWN;
 
 static uint32_t slot_addr(unsigned int slot)
 {
@@ -76,14 +80,25 @@ static uint32_t slot_capacity(unsigned int slot)
     return slot_size(slot) - sizeof(struct slot_header);
 }
 
+static void invalidate_hint(void)
+{
+    OS_ENTER_CRITICAL();
+    preparation_hint = HINT_UNKNOWN;
+    OS_EXIT_CRITICAL();
+}
+
 static int flash_read(void *data, uint32_t size, uint32_t addr)
 {
-    return tzflash_read(data, size, addr) == (int)size;
+    if (tzflash_read(data, size, addr) == (int)size) return 1;
+    invalidate_hint();
+    return 0;
 }
 
 static int flash_write(const void *data, uint32_t size, uint32_t addr)
 {
-    return tzflash_write(data, size, addr) == (int)size;
+    int written = tzflash_write(data, size, addr);
+    invalidate_hint();
+    return written == (int)size;
 }
 
 static int program_word(uint32_t value, uint32_t addr)
@@ -149,6 +164,7 @@ static void publish_item(unsigned int slot, const struct slot_header *header)
 
 void badge_media_store_init(void)
 {
+    invalidate_hint();
     pending_slot = -1;
     memset(items, 0, sizeof(items));
     for (unsigned int slot = 0; slot < BADGE_MEDIA_SLOTS; ++slot) {
@@ -231,7 +247,9 @@ void badge_media_store_stats(unsigned int blank[BADGE_MEDIA_SLOTS], unsigned int
 static int erase_sector(uint32_t addr)
 {
     wdt_clear();
-    return tzflash_ioctl(IOCTL_ERASE_SECTOR, addr);
+    int result = tzflash_ioctl(IOCTL_ERASE_SECTOR, addr);
+    invalidate_hint();
+    return result;
 }
 
 /* Return an eligible slot, or the reason no slot can be used. */
@@ -282,13 +300,27 @@ int badge_media_store_check_space(void)
 
 int badge_media_store_needs_preparation(void)
 {
+    OS_ENTER_CRITICAL();
+    int hint = preparation_hint;
+    if (hint < 0) preparation_hint = HINT_SCANNING;
+    OS_EXIT_CRITICAL();
+    if (hint >= 0) return hint;
+
+    int dirty = 0;
     for (unsigned int slot = 0; slot < BADGE_MEDIA_SLOTS; ++slot) {
         if (badge_media_get(slot)) continue;
         uint32_t start = slot_addr(slot), owner;
         if (flash_read(&owner, sizeof(owner), start) && owner != SLOT_OWNER &&
-            check_erased(start, slot_size(slot)) == BADGE_MEDIA_ERR_SETUP) return 1;
+            check_erased(start, slot_size(slot)) == BADGE_MEDIA_ERR_SETUP) {
+            dirty = 1;
+            break;
+        }
     }
-    return 0;
+    /* A concurrent write or a failed read invalidates the scan in progress. */
+    OS_ENTER_CRITICAL();
+    if (preparation_hint == HINT_SCANNING) preparation_hint = dirty;
+    OS_EXIT_CRITICAL();
+    return dirty;
 }
 
 int badge_media_store_prepare(void)

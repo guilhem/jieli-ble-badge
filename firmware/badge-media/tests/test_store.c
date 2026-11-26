@@ -15,6 +15,7 @@ static unsigned int pref_writes;
 static int fail_after = -1;
 static uint32_t unreadable_addr = UINT32_MAX;
 static uint32_t erase_noop_addr = UINT32_MAX;
+static unsigned int bytes_read;
 static unsigned int erases;
 static unsigned int watchdog_kicks;
 pthread_mutex_t badge_test_critical = PTHREAD_MUTEX_INITIALIZER;
@@ -34,6 +35,7 @@ static uint8_t *flash_at(uint32_t addr, uint32_t size)
 
 int tzflash_read(void *dst, uint32_t size, uint32_t addr)
 {
+    bytes_read += size;
     if (addr == unreadable_addr) return -1;
     memcpy(dst, flash_at(addr, size), size);
     return size;
@@ -128,6 +130,40 @@ static size_t stream_file(const char *path, const char *name)
     assert(!ferror(file));
     fclose(file);
     return total;
+}
+
+static void test_gallery_hint(void)
+{
+    memset(flash, 255, sizeof(flash));
+    badge_media_store_init();
+    unreadable_addr = BADGE_MEDIA_FLASH_START + 128;
+    assert(!badge_media_store_needs_preparation());
+    unreadable_addr = UINT32_MAX;
+    bytes_read = 0;
+    assert(!badge_media_store_needs_preparation());
+    assert(bytes_read >= sizeof(flash));
+    bytes_read = 0;
+    assert(!badge_media_store_needs_preparation() && bytes_read == 0);
+
+    /* A cached blank hint must never authorize a write over foreign data. */
+    flash[sizeof(flash) - 1] = 0;
+    assert(badge_media_store_begin(BADGE_MEDIA_CLIP, "clip", 1) == BADGE_MEDIA_ERR_SETUP);
+    assert(!erases && flash[sizeof(flash) - 1] == 0);
+    unreadable_addr = BADGE_MEDIA_FLASH_START;
+    assert(badge_media_store_check_space() == BADGE_MEDIA_ERR_IO);
+    unreadable_addr = UINT32_MAX;
+    assert(badge_media_store_needs_preparation());
+    bytes_read = 0;
+    assert(badge_media_store_needs_preparation() && bytes_read == 0);
+
+    assert(!badge_media_store_prepare());
+    assert(!badge_media_store_needs_preparation());
+    assert(!badge_media_store_begin(BADGE_MEDIA_TEXT, "note", 1));
+    badge_media_store_abort();
+    bytes_read = 0;
+    assert(!badge_media_store_needs_preparation() && bytes_read > 0);
+    assert(erases == 1);
+    erases = watchdog_kicks = 0;
 }
 
 static void test_prepare(const char *photo)
@@ -235,6 +271,7 @@ static void test_svg_import(void)
 int main(int argc, char **argv)
 {
     assert(argc == 3);
+    test_gallery_hint();
     test_prepare(argv[1]);
     memset(flash, 255, sizeof(flash));
     badge_media_store_init();

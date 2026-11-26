@@ -2,7 +2,6 @@
 #include "badge_media_ui.h"
 #include "badge_media_codec.h"
 #include "badge_media_store.h"
-#include "badge_media_sample.h"
 #include "badge_media_svg_font.h"
 #include "badge_opp.h"
 #include "badge_svg.h"
@@ -165,16 +164,6 @@ static int next_slot(int from, int direction)
     return -1;
 }
 
-static size_t read_sample(void *ctx, void *dst, size_t length)
-{
-    size_t *offset = ctx;
-    size_t remaining = sizeof(badge_media_sample_jpeg) - *offset;
-    if (length > remaining) length = remaining;
-    memcpy(dst, badge_media_sample_jpeg + *offset, length);
-    *offset += length;
-    return length;
-}
-
 void badge_media_ui_home(void)
 {
     close_svg();
@@ -183,11 +172,7 @@ void badge_media_ui_home(void)
     const struct badge_media_item *item = selected >= 0 ? badge_media_get(selected) : NULL;
     playing = false;
     if (!item) {
-        size_t offset = 0;
-        if (badge_jpeg_decode(read_sample, &offset, badge_media_pixels) == 0)
-            show_image(&picture);
-        else
-            show_text("E-badge");
+        show_text("Press Button 1\nthen choose Receive");
         return;
     }
     void *ctx = (void *)(uintptr_t)selected;
@@ -599,7 +584,6 @@ unsigned int badge_media_ui_init(lv_obj_t *screen, lv_group_t *keypad,
     lv_obj_set_style_text_font(text_label, &badge_text_font, 0);
     lv_obj_set_style_text_align(text_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(text_label, LV_LABEL_LONG_WRAP);
-    if (selected < 0) show_hint("Menu > Receive");
     return brightness;
 }
 
@@ -610,9 +594,13 @@ unsigned int badge_media_ui_tick(void)
     if (lv_scr_act() != home) return 1;
     if (svg.animating) {
         update_svg();
-        return svg.animating ? 1 : 4;
+        if (svg.animating) return 1;
     }
-    if (!playing) return 4;
+    if (!playing) {
+        /* Give input and scrolling their normal cadence before parking on a still image. */
+        if (lv_disp_get_inactive_time(NULL) < 2000 || lv_anim_count_running()) return 1;
+        return 20; /* 200 ms maximum. The touch and key drivers wake the UI on a press. */
+    }
     uint32_t now = timer_get_ms();
     if ((int32_t)(now - next_frame_ms) >= 0) {
         int result = badge_avi_next(&clip, badge_media_pixels);
