@@ -6,7 +6,7 @@ Display a photo, a looping clip, or a short message on the E87 badge. Send files
 
 ## Send a photo
 
-1. On the badge, press **Button 1** and tap **Receive**.
+1. On the badge, press **Button 1** and tap **Receive**. If prompted, **Erase and prepare** clears the old gallery area and starts the receiver.
 2. Send a JPEG of your own or try the [example landscape](docs/media/landscape.jpg?raw=true).
 
    - **Android** — Open the photo and choose **Share → Bluetooth → EC-BADGE**.
