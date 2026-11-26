@@ -1,5 +1,8 @@
 # Updating the lock-screen image
 
+This guide applies to earlier E87 firmware with the lock-screen wallpaper. On the current
+E87 firmware, use the [media gallery](badge-media.md).
+
 144×144 RGB565 image on the lock screen. The firmware reads a BLE-updatable slot at flash
 `0x300000` (falls back to the built-in default if empty). Update it over BLE — no reflash.
 

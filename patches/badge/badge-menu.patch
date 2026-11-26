@@ -330,6 +330,23 @@ index 611f17b..f318369 100644
  
  pre_build:
  	$(info +CC build/genFileList.c)
+diff --git a/SDK/apps/common/config/bt_profile_config.c b/SDK/apps/common/config/bt_profile_config.c
+index 7f5a53a..560c486 100644
+--- a/SDK/apps/common/config/bt_profile_config.c
++++ b/SDK/apps/common/config/bt_profile_config.c
+@@ -133,9 +133,11 @@ SDP_RECORD_HANDLER_REGISTER(pbap_sdp_record_item) = {
+     .service_record_handle = 0x00010007,
+ };
+ #endif
+-#if (TCFG_BT_SUPPORT_OPP==1)
++#if (TCFG_BT_SUPPORT_OPP==1) || (defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87))
+ extern const u8 sdp_opp_service_data[];
++#if TCFG_BT_SUPPORT_OPP
+ u8 opp_profile_support = 1;
++#endif /* The E87 media receiver owns the RFCOMM channel. */
+ SDP_RECORD_HANDLER_REGISTER(opp_sdp_record_item) = {
+     .service_record = (u8 *)sdp_opp_service_data,
+     .service_record_handle = 0x00010008,
 diff --git a/SDK/apps/common/dev_manager/dev_manager.c b/SDK/apps/common/dev_manager/dev_manager.c
 index 045b2e8..a118d48 100644
 --- a/SDK/apps/common/dev_manager/dev_manager.c
@@ -811,10 +828,48 @@ index 61de378..a3172bc 100644
  {
      if (get_ble_work_state(cur_dev_cid) == BLE_ST_CREATE_CONN) {
 diff --git a/SDK/apps/common/third_party_profile/jieli/rcsp/ble_rcsp_server.c b/SDK/apps/common/third_party_profile/jieli/rcsp/ble_rcsp_server.c
-index 9b9bcd2..cc1a0db 100644
+index 9b9bcd2..a089fc0 100644
 --- a/SDK/apps/common/third_party_profile/jieli/rcsp/ble_rcsp_server.c
 +++ b/SDK/apps/common/third_party_profile/jieli/rcsp/ble_rcsp_server.c
-@@ -104,20 +104,21 @@ static const uint8_t sm_min_key_size = 7;
+@@ -63,6 +63,37 @@
+ 
+ #if ( BT_AI_SEL_PROTOCOL & RCSP_MODE_EN )
+ 
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++extern u8 badge_update_diagnostics_enabled(void);
++extern unsigned int badge_media_diagnostic_read(char *buffer, unsigned int size);
++static char diagnostic_value[256];
++static u16 diagnostic_length;
++static hci_con_handle_t diagnostic_connection;
++
++/* BR35 probes at offset zero before every Read and Read Blob. Keep one
++ * snapshot until its last byte has been copied or the connection closes. */
++static u16 badge_diagnostic_att_read(hci_con_handle_t connection, u16 offset, u8 *buffer, u16 size)
++{
++    if (!badge_update_diagnostics_enabled()) {
++        diagnostic_length = 0;
++        return 0;
++    }
++    if (!diagnostic_length || diagnostic_connection != connection) {
++        if (offset) return 0;
++        unsigned int length = badge_media_diagnostic_read(diagnostic_value, sizeof(diagnostic_value));
++        diagnostic_length = length < sizeof(diagnostic_value) ? length : 0;
++        diagnostic_connection = connection;
++    }
++    if (offset >= diagnostic_length) return 0;
++    u16 left = diagnostic_length - offset;
++    if (!buffer) return left;
++    u16 count = left < size ? left : size;
++    memcpy(buffer, diagnostic_value + offset, count);
++    if (count == left) diagnostic_length = 0;
++    return count;
++}
++#endif
++
+ #if 1
+ #define log_info(x, ...)       printf("[LE-RCSP]" x " ", ## __VA_ARGS__)
+ #define log_info_hexdump       put_buf
+@@ -104,20 +135,21 @@ static const uint8_t sm_min_key_size = 7;
  //连接参数设置
  static const uint8_t connection_update_enable = 1; ///0--disable, 1--enable
  static uint8_t connection_update_cnt = 0; //
@@ -843,7 +898,7 @@ index 9b9bcd2..cc1a0db 100644
  };
  
  static u8 conn_update_param_index = 0;
-@@ -397,6 +398,11 @@ static void cbk_sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t
+@@ -397,6 +429,11 @@ static void cbk_sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t
          case SM_EVENT_PAIR_PROCESS:
              log_info("======PAIR_PROCESS: %02x\n", event->data[0]);
              log_info_hexdump(event->data, 4);
@@ -855,7 +910,7 @@ index 9b9bcd2..cc1a0db 100644
              switch (event->data[0]) {
              case SM_EVENT_PAIR_SUB_RECONNECT_START:
                  pair_reconnect_flag = 1;
-@@ -489,6 +495,19 @@ void rcsp_app_ble_set_mac_addr(void *addr)
+@@ -489,6 +526,19 @@ void rcsp_app_ble_set_mac_addr(void *addr)
  // 根据已连接设备数量判断是否开关蓝牙广播
  void rcsp_ble_adv_enable_with_con_dev()
  {
@@ -875,7 +930,7 @@ index 9b9bcd2..cc1a0db 100644
      uint32_t rets_addr;
      __asm__ volatile("%0 = rets ;" : "=r"(rets_addr));
      log_info("%s, rets=0x%x\n", __FUNCTION__, rets_addr);
-@@ -558,9 +577,162 @@ static bool le_smart_check_connect_remote(u8 addr_type, u8 *addr)
+@@ -558,9 +608,162 @@ static bool le_smart_check_connect_remote(u8 addr_type, u8 *addr)
      }
  }
  extern void bt_rcsp_set_conn_info(u16 con_handle, void *remote_addr, bool isconn);
@@ -1038,7 +1093,7 @@ index 9b9bcd2..cc1a0db 100644
  
      switch (packet_type) {
      case HCI_EVENT_PACKET:
-@@ -583,6 +755,9 @@ static void cbk_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
+@@ -583,6 +786,9 @@ static void cbk_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
                  }
                  hci_con_handle_t con_handle = little_endian_read_16(packet, 4);
                  log_info("HCI_SUBEVENT_LE_CONNECTION_COMPLETE: %0x\n", con_handle);
@@ -1048,10 +1103,13 @@ index 9b9bcd2..cc1a0db 100644
                  bt_rcsp_set_conn_info(con_handle, NULL, true);
                  log_info_hexdump(packet + 7, 7);
                  memcpy(cur_peer_addr_info, packet + 7, 7);
-@@ -610,6 +785,29 @@ static void cbk_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
+@@ -610,6 +816,32 @@ static void cbk_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
  
          case HCI_EVENT_DISCONNECTION_COMPLETE:
              log_info("HCI_EVENT_DISCONNECTION_COMPLETE: %0x\n", packet[5]);
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++            if (diagnostic_connection == little_endian_read_16(packet, 3)) diagnostic_length = 0;
++#endif
 +#ifdef CONFIG_BADGE_MENU
 +            /* DIAG: packet[5] = HCI disconnect reason. Common ones: 0x13 remote-user-terminated,
 +             * 0x16 local-host-terminated, 0x05 auth-failure, 0x08 supervision-timeout,
@@ -1078,7 +1136,7 @@ index 9b9bcd2..cc1a0db 100644
              hci_con_handle_t dis_con_handle = little_endian_read_16(packet, 3);
              log_info("%s, %s, %d, dis_con_handle:%d\n", __FILE__, __FUNCTION__, __LINE__, dis_con_handle);
  #if (TCFG_BLE_ADV_DYNAMIC_SWITCH && TCFG_UI_ENABLE)
-@@ -690,6 +888,9 @@ static void cbk_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
+@@ -690,6 +922,9 @@ static void cbk_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
              u16 temp_con_handle = little_endian_read_16(packet, 3);
  
              log_info("HCI_EVENT_ENCRYPTION_CHANGE= %d\n", packet[2]);
@@ -1088,7 +1146,7 @@ index 9b9bcd2..cc1a0db 100644
              if (packet[2] == 0) {
                  /*ENCRYPTION is ok */
                  check_connetion_updata_deal(temp_con_handle);
-@@ -1004,6 +1205,21 @@ static int set_adv_enable(void *priv, u32 en)
+@@ -1004,6 +1239,21 @@ static int set_adv_enable(void *priv, u32 en)
      }
  
      log_info("adv_en:%d\n", en);
@@ -1110,7 +1168,7 @@ index 9b9bcd2..cc1a0db 100644
      set_ble_work_state(next_state);
      if (en) {
          advertisements_setup_init();
-@@ -1016,7 +1232,22 @@ static int set_adv_enable(void *priv, u32 en)
+@@ -1016,7 +1266,22 @@ static int set_adv_enable(void *priv, u32 en)
          bt_ble_rcsp_adv_enable();
          u8 adv_handle = app_ble_adv_handle_get(rcsp_server_ble_hdl);
          u8 *addr = app_ble_adv_addr_get(rcsp_server_ble_hdl);
@@ -1134,7 +1192,7 @@ index 9b9bcd2..cc1a0db 100644
      } else {
          app_ble_adv_enable(rcsp_server_ble_hdl, en);
          app_ble_adv_enable(rcsp_server_ble_hdl1, en);
-@@ -1182,14 +1413,27 @@ void rcsp_bt_ble_init(void)
+@@ -1182,14 +1447,27 @@ void rcsp_bt_ble_init(void)
      /* log_info_hexdump(tmp_ble_addr, 6); */
      app_ble_set_mac_addr(rcsp_server_ble_hdl, tmp_ble_addr);
      app_ble_set_mac_addr(rcsp_server_ble_hdl1, tmp_ble_addr);
@@ -1162,7 +1220,7 @@ index 9b9bcd2..cc1a0db 100644
  
  #if(RCSP_MODE && (RCSP_MODE !=  RCSP_MODE_WATCH))
      bt_ble_rcsp_adv_enable();
-@@ -1255,6 +1499,42 @@ void hangup_ans_call_handle(u8 en)
+@@ -1255,6 +1533,42 @@ void hangup_ans_call_handle(u8 en)
  
  void bt_rcsp_custom_att_write_callback(void *hdl, hci_con_handle_t connection_handle, uint16_t att_handle, uint16_t transaction_mode, uint16_t offset, uint8_t *buffer, uint16_t buffer_size)
  {
@@ -1205,7 +1263,7 @@ index 9b9bcd2..cc1a0db 100644
  #if (defined TCFG_JL_WALLPAPER_ENABLE && TCFG_JL_WALLPAPER_ENABLE)
      printf("att_handle %x\n\n\n", att_handle);
      switch (att_handle)
-@@ -1274,6 +1554,13 @@ void bt_rcsp_custom_att_write_callback(void *hdl, hci_con_handle_t connection_ha
+@@ -1274,6 +1588,13 @@ void bt_rcsp_custom_att_write_callback(void *hdl, hci_con_handle_t connection_ha
          break;
      }
  #endif
@@ -1219,7 +1277,7 @@ index 9b9bcd2..cc1a0db 100644
      if (att_handle == ATT_CHARACTERISTIC_ae02_01_CLIENT_CONFIGURATION_HANDLE) {
          check_connetion_updata_deal(connection_handle);
      }
-@@ -1283,9 +1570,59 @@ void bt_rcsp_custom_att_write_callback(void *hdl, hci_con_handle_t connection_ha
+@@ -1283,9 +1604,63 @@ void bt_rcsp_custom_att_write_callback(void *hdl, hci_con_handle_t connection_ha
  }
  uint16_t bt_rcsp_custom_att_read_callback(void *hdl, hci_con_handle_t connection_handle, uint16_t att_handle, uint16_t offset, uint8_t *buffer, uint16_t buffer_size)
  {
@@ -1240,6 +1298,10 @@ index 9b9bcd2..cc1a0db 100644
 +     * then with a real buffer to copy buffer_size bytes from `offset` (same contract as the
 +     * SDK's custom_att_read_callback). Returns the byte count on each call. */
 +    switch (att_handle) {
++#ifdef CONFIG_BADGE_BOARD_E87
++    case 0x003c:
++        return badge_diagnostic_att_read(connection_handle, offset, buffer, buffer_size);
++#endif
 +    case 0x0027: {
 +        const u8 rpt[3] = {0, 0, 0};
 +        if (offset >= sizeof(rpt)) {
@@ -1281,10 +1343,10 @@ index 9b9bcd2..cc1a0db 100644
  
 diff --git a/SDK/apps/common/third_party_profile/jieli/rcsp/qix_ota_server.c b/SDK/apps/common/third_party_profile/jieli/rcsp/qix_ota_server.c
 new file mode 100644
-index 0000000..7f0e662
+index 0000000..af7befb
 --- /dev/null
 +++ b/SDK/apps/common/third_party_profile/jieli/rcsp/qix_ota_server.c
-@@ -0,0 +1,590 @@
+@@ -0,0 +1,598 @@
 +/*
 + * Qix OTA server over BLE (GATT service C2E6FD00) for the e_badge watch firmware.
 + *
@@ -1325,6 +1387,9 @@ index 0000000..7f0e662
 +#include "btstack/le/att.h"
 +#include "btstack/le/ble_api.h"
 +#include "btstack/bluetooth.h"
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++#include "badge_media_store.h"
++#endif
 +#include "dual_bank_updata_api.h"
 +
 +/* Use plain printf (JieLi's LOG_TAG_CONST mechanism needs the tag registered in the
@@ -1359,8 +1424,12 @@ index 0000000..7f0e662
 +#define QIX_STAGE_BASE    0x358000u
 +#define QIX_STAGE_END     0x3DD000u
 +#else
-+#define QIX_STAGE_BASE    0x17E000u   /* free raw region [0x17E000,0x3BE000): SDFILE+VIRFAT as scratch */
++#define QIX_STAGE_BASE    0x17E000u
++#ifdef CONFIG_BADGE_BOARD_E87
++#define QIX_STAGE_END     BADGE_MEDIA_FLASH_START
++#else
 +#define QIX_STAGE_END     0x3BE000u
++#endif
 +#endif
 +#define QIX_ERASE_SECTOR_CMD  200     /* IOCTL_ERASE_SECTOR (matches qix_raw_flash.c) */
 +extern int  tzflash_write(const void *buf, u32 len, u32 offset);
@@ -1640,7 +1709,7 @@ index 0000000..7f0e662
 +
 +#if QIX_OTA_STAGE_SINGLE_BANK
 +        /* Erase the raw staging span, then stream the chunks into it (0xC2). */
-+        if (!qix_ota_total || QIX_STAGE_BASE + qix_ota_total > QIX_STAGE_END) {
++        if (!qix_ota_total || qix_ota_total > QIX_STAGE_END - QIX_STAGE_BASE) {
 +            qix_log("REQ_UPDATE: %u bytes won't fit staging [0x%x,0x%x) — reject",
 +                    qix_ota_total, QIX_STAGE_BASE, QIX_STAGE_END);
 +            qix_ota_active = 0;
@@ -1700,7 +1769,8 @@ index 0000000..7f0e662
 +        /* Safety: the declared chunk_size must match the actual data, and the chunk offset
 +         * must be exactly where we are — dual_bank writes to flash sequentially, so an
 +         * out-of-order chunk or a mismatched size would corrupt the image. */
-+        if (chunk_size != dlen || chunk_off != qix_ota_offset) {
++        if (chunk_size != dlen || chunk_off != qix_ota_offset ||
++            qix_ota_offset > qix_ota_total || dlen > qix_ota_total - qix_ota_offset) {
 +            qix_log("SEND_DATA bad: size=%u dlen=%u off=%u expect=%u — abort",
 +                    chunk_size, dlen, chunk_off, qix_ota_offset);
 +#if QIX_OTA_APPLY
@@ -1896,10 +1966,10 @@ index 0000000..80dff66
 +#endif /* QIX_OTA_SERVER_H */
 diff --git a/SDK/apps/common/third_party_profile/jieli/rcsp/qix_raw_flash.c b/SDK/apps/common/third_party_profile/jieli/rcsp/qix_raw_flash.c
 new file mode 100644
-index 0000000..750f1ca
+index 0000000..5f7318d
 --- /dev/null
 +++ b/SDK/apps/common/third_party_profile/jieli/rcsp/qix_raw_flash.c
-@@ -0,0 +1,369 @@
+@@ -0,0 +1,383 @@
 +/*
 + * Qix raw-flash service — part of the badge menu firmware (-DCONFIG_BADGE_MENU).
 + * Adds direct erase/write/read access to ANY flash partition on top of the existing
@@ -1934,6 +2004,9 @@ index 0000000..750f1ca
 +#include "btstack/le/att.h"
 +#include "btstack/le/ble_api.h"
 +#include "btstack/bluetooth.h"
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++#include "badge_media_store.h"
++#endif
 +
 +#define raw_log(fmt, ...)   printf("[BADGE-RAW] " fmt "\n", ##__VA_ARGS__)
 +
@@ -1976,7 +2049,11 @@ index 0000000..750f1ca
 +#else
 +/* badge 1 (E87): CODE 0..0x17E000 | SDFILE/ui_res 0x17E000 | VIRFAT 0x33E000 | DATA 0x3BE000 */
 +#define RAW_CODE_PROTECT_END      0x17E000
++#ifdef CONFIG_BADGE_BOARD_E87
++#define RAW_CONFIG_PROTECT_START  BADGE_MEDIA_FLASH_START
++#else
 +#define RAW_CONFIG_PROTECT_START  0x3BE000
++#endif
 +#endif
 +#define IOCTL_ERASE_SECTOR_CMD    200      /* IOCTL_ERASE_SECTOR (interface/utils/device/ioctl_cmds.h) */
 +
@@ -2015,10 +2092,8 @@ index 0000000..750f1ca
 +        return 2;
 +    }
 +    u32 a   = addr & ~0xFFFUL;          /* align down to 4 KB */
-+    u32 end = addr + len;
-+    if (end > RAW_CONFIG_PROTECT_START) {
-+        end = RAW_CONFIG_PROTECT_START;
-+    }
++    u32 available = RAW_CONFIG_PROTECT_START - addr;
++    u32 end = addr + (len < available ? len : available);
 +    while (a < end) {
 +        if (tzflash_ioctl(IOCTL_ERASE_SECTOR_CMD, a) != 0) {
 +            return 1;
@@ -2142,6 +2217,10 @@ index 0000000..750f1ca
 +        printf("[OTA-DBG] raw_apply_staged: lc_flash apply NOT compiled in -> abort\n");
 +        return -1;
 +    }
++    if (addr < RAW_CODE_PROTECT_END || addr >= RAW_CONFIG_PROTECT_START ||
++        !len || len > RAW_CONFIG_PROTECT_START - addr) {
++        return -2;
++    }
 +    stg_ufw_base = addr;
 +    stg_ufw_len  = len;
 +    stg_ufw_cur  = 0;
@@ -2205,7 +2284,8 @@ index 0000000..750f1ca
 +        const u8 *data = p + 4;
 +        u16 dlen = plen - 4;
 +        u8 st = 0;
-+        if (addr < RAW_CODE_PROTECT_END || addr + dlen > RAW_CONFIG_PROTECT_START) {
++        if (addr < RAW_CODE_PROTECT_END || addr >= RAW_CONFIG_PROTECT_START ||
++            dlen > RAW_CONFIG_PROTECT_START - addr) {
 +            st = 2;                                  /* protected / out of range */
 +        } else if (tzflash_write(data, dlen, addr) < 0) {
 +            st = 1;                                  /* flash write error */
@@ -2232,7 +2312,11 @@ index 0000000..750f1ca
 +        }
 +        u8 rb[1 + 16];
 +        rb[0] = 0;
-+        if (addr + rlen > RAW_FLASH_END || tzflash_read(&rb[1], rlen, addr) < 0) {
++        if (addr >= RAW_FLASH_END || rlen > RAW_FLASH_END - addr ||
++#ifdef CONFIG_BADGE_BOARD_E87
++            (addr < BADGE_MEDIA_FLASH_END && addr + rlen > BADGE_MEDIA_FLASH_START) ||
++#endif
++            tzflash_read(&rb[1], rlen, addr) < 0) {
 +            rb[0] = 1;
 +            rlen = 0;
 +        }
@@ -2334,7 +2418,7 @@ index 0324618..5152e60 100644
          register_receive_fw_update_block_handle(rcsp_update_handle);
  #if (RCSP_MODE == RCSP_MODE_WATCH)
 diff --git a/SDK/apps/common/third_party_profile/multi_protocol_main.c b/SDK/apps/common/third_party_profile/multi_protocol_main.c
-index 8cb6dde..03ab351 100644
+index 8cb6dde..61b6b3a 100644
 --- a/SDK/apps/common/third_party_profile/multi_protocol_main.c
 +++ b/SDK/apps/common/third_party_profile/multi_protocol_main.c
 @@ -52,7 +52,13 @@ SDP_RECORD_REGISTER(rcsp_sdp_record_item) = {
@@ -2352,7 +2436,7 @@ index 8cb6dde..03ab351 100644
      //////////////////////////////////////////////////////
      //
      // 0x0001 PRIMARY_SERVICE  1800
-@@ -126,12 +132,170 @@ const uint8_t rcsp_profile_data[] = {
+@@ -126,12 +132,180 @@ const uint8_t rcsp_profile_data[] = {
      0x0d, 0x00, 0x02, 0x00, 0x13, 0x00, 0x03, 0x28, 0x30, 0x14, 0x00, 0x02, 0xaa,
      // 0x0014 VALUE aa02 INDICATE | NOTIFY  
      0x08, 0x00, 0x30, 0x00, 0x14, 0x00, 0x02, 0xaa,
@@ -2490,6 +2574,16 @@ index 8cb6dde..03ab351 100644
 +    // 0x0039 CLIENT_CHARACTERISTIC_CONFIGURATION (service changed)
 +    0x0a, 0x00, 0x0a, 0x01, 0x39, 0x00, 0x02, 0x29, 0x00, 0x00,
 +
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++    /* E87 media diagnostics, appended to preserve every existing ATT handle. */
++    // 0x003a PRIMARY_SERVICE FD10
++    0x18, 0x00, 0x02, 0x00, 0x3a, 0x00, 0x00, 0x28, QIX_UUID128_LE(0x10),
++    // 0x003b CHARACTERISTIC FD11 READ, value handle 0x003c
++    0x1b, 0x00, 0x02, 0x00, 0x3b, 0x00, 0x03, 0x28, 0x02, 0x3c, 0x00, QIX_UUID128_LE(0x11),
++    // 0x003c VALUE FD11 READ | DYNAMIC | UUID128
++    0x16, 0x00, 0x02, 0x03, 0x3c, 0x00, QIX_UUID128_LE(0x11),
++#endif
++
      // END
      0x00, 0x00,
  };
@@ -2525,7 +2619,7 @@ index 8cb6dde..03ab351 100644
  #endif
  
  #if (BT_AI_SEL_PROTOCOL & LE_AUDIO_CIS_RX_EN)
-@@ -342,10 +506,29 @@ static void multi_protocol_profile_init(void)
+@@ -342,10 +516,29 @@ static void multi_protocol_profile_init(void)
  #elif (BT_AI_SEL_PROTOCOL&LE_AUDIO_CIS_RX_EN)
      app_ble_sm_init(IO_CAPABILITY_NO_INPUT_NO_OUTPUT, SM_AUTHREQ_BONDING | SM_AUTHREQ_SECURE_CONNECTION | SM_AUTHREQ_MITM_PROTECTION, 7, 0);
      le_audio_sm_setup_init(IO_CAPABILITY_NO_INPUT_NO_OUTPUT, SM_AUTHREQ_BONDING | SM_AUTHREQ_SECURE_CONNECTION | SM_AUTHREQ_MITM_PROTECTION, 7, 0);
@@ -5363,7 +5457,7 @@ index 826a990..28f0935 100644
  /*1: Enable Pinyin input method*/
  /*Requires: lv_keyboard*/
 diff --git a/SDK/apps/common/ui/lvgl_v8/lvgl_main.c b/SDK/apps/common/ui/lvgl_v8/lvgl_main.c
-index 8cbf236..fa055ea 100644
+index 8cbf236..2321564 100644
 --- a/SDK/apps/common/ui/lvgl_v8/lvgl_main.c
 +++ b/SDK/apps/common/ui/lvgl_v8/lvgl_main.c
 @@ -7,6 +7,8 @@
@@ -5375,15 +5469,20 @@ index 8cbf236..fa055ea 100644
  #include "demos/benchmark/lv_demo_benchmark.h"
  #include "demos/widgets/lv_demo_widgets.h"
  #include "lv_port_disp.h"
-@@ -19,6 +21,7 @@
+@@ -19,6 +21,12 @@
  #include "time.h"
  #include "ui_key_remap.h"
  #include "lcd/lcd_lvgl_api.h"
-+#include "lock_wallpaper.h"             /* embedded 144x144 RGB565 lock-screen wallpaper */
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++#include "badge_media_ui.h"
++#define CONFIG_BADGE_MEDIA_UI
++#else
++#include "lock_wallpaper.h"
++#endif
  
  #define LVGL_TASK_NAME 	"ui"
  
-@@ -97,7 +100,13 @@ static void lvgl_key_drop_key_handle_timeout_cb(void *p)
+@@ -97,7 +105,13 @@ static void lvgl_key_drop_key_handle_timeout_cb(void *p)
  
  static int lvgl_key_event_handler(struct key_event *key)
  {
@@ -5398,7 +5497,7 @@ index 8cbf236..fa055ea 100644
  
      int msg_p[2 + sizeof(struct key_event) / 4];
  
-@@ -977,8 +986,1495 @@ u8 lvgl_ui_is_suspended(void)
+@@ -977,8 +991,1568 @@ u8 lvgl_ui_is_suspended(void)
      return lvgl_suspend_flag;
  }
  
@@ -5437,12 +5536,16 @@ index 8cbf236..fa055ea 100644
 + * Level 0 is dim rather than off — a 0% step would look like a dead badge. */
 +#define BADGE_BRIGHT_STEPS  6
 +static const u8 g_bright_pct[BADGE_BRIGHT_STEPS] = { 10, 30, 50, 70, 85, 100 };
-+static u8 g_bright_idx = BADGE_BRIGHT_STEPS - 1;   /* starts at max brightness */
++#ifdef CONFIG_BADGE_MEDIA_UI
++static u8 g_bright_idx = 2;   /* 50% until the stored preference is loaded */
++#else
++static u8 g_bright_idx = BADGE_BRIGHT_STEPS - 1;
++#endif
 +static lv_obj_t *g_bright_lbl;
 +static lv_obj_t *g_update_scr;
 +static lv_obj_t *g_update_lbl;
 +static lv_obj_t *g_update_keytgt;      /* HW-back target on the update screen */
-+static u8 g_on_update_scr;             /* the update screen is showing */
++static volatile u8 g_on_update_scr;             /* the update screen is showing */
 +/* Desired state of the BLE radio (0 at boot). Managed by ble_on()/ble_off() below (they set it), and
 + * read by rcsp_ble_adv_enable_with_con_dev() (ble_rcsp_server.c) so the stack does NOT
 + * re-auto-advertise on a connect/disconnect while the menu wants BLE off. Non-static + volatile
@@ -5465,6 +5568,16 @@ index 8cbf236..fa055ea 100644
 +/* Set by the BLE OTA path (stager/Qix) when a transfer is actually in progress: the update
 + * screen turns green and Back is locked. Non-static so the OTA code can set it. */
 +volatile u8 g_badge_update_active;
++
++#ifdef CONFIG_BADGE_MEDIA_UI
++/* The BLE stack reads only these state flags, never LVGL objects. */
++u8 badge_update_diagnostics_enabled(void)
++{
++    extern u8 get_ota_status(void);
++    return g_on_update_scr && !g_badge_update_active && !get_ota_status();
++}
++#endif
++
 +
 +/* ---- Bluetooth Scanner screen and logic ---- */
 +static lv_obj_t *g_scanner_scr;
@@ -5618,7 +5731,7 @@ index 8cbf236..fa055ea 100644
 +{
 +    if (!g_kp_group) { return; }
 +    lv_group_remove_all_objs(g_kp_group); g_kp_single = 0;
-+#ifdef CONFIG_BADGE_BOARD_DG01
++#if defined(CONFIG_BADGE_BOARD_DG01) || defined(CONFIG_BADGE_MEDIA_UI)
 +    /* One button, so the menu MUST be keypad-navigable: touch is the only other way in and
 +     * it cannot be relied on (dead on this unit as of 2026-09-17). keypad_read turns a short
 +     * press into NEXT and a long one into ENTER; the main loop keeps the >=2 s press for
@@ -5632,6 +5745,21 @@ index 8cbf236..fa055ea 100644
 +     * EMPTY here — otherwise Button 1 (ENTER) would also activate a focused tool. */
 +#endif
 +}
++#ifdef CONFIG_BADGE_MEDIA_UI
++static void media_tools_open(lv_event_t *e)
++{
++    (void)e;
++    lv_scr_load(g_menu_scr);
++    kp_set_menu();
++}
++
++static void media_menu_open(lv_event_t *e)
++{
++    (void)e;
++    badge_media_ui_menu();
++}
++#endif
++
 +static void kp_set_settings(void)
 +{
 +    if (!g_kp_group) { return; }
@@ -5687,8 +5815,12 @@ index 8cbf236..fa055ea 100644
 +    if (!g_warn_active) { return; }
 +    printf("battery gate: dismissed\n");
 +    g_warn_active = 0;
++#ifdef CONFIG_BADGE_MEDIA_UI
++    badge_media_ui_menu();
++#else
 +    lv_scr_load(g_menu_scr);
 +    kp_set_menu();
++#endif
 +}
 +
 +/* Entrance gate for the BLE tools (Scanned/Scanner/Spoof, Mouse, Update). Below the
@@ -5820,6 +5952,7 @@ index 8cbf236..fa055ea 100644
 +    lcd_drv_backlight_ctrl(g_bright_pct[g_bright_idx]);   /* restore saved brightness */
 +}
 +
++#ifndef CONFIG_BADGE_MEDIA_UI
 +/* ---- BLE-updatable lock wallpaper (fixed flash slot, no reflash) --------------
 + * The lock image can be replaced over BLE — no firmware reflash — by raw-flashing an image
 + * blob to a fixed flash slot: `qix rawflash <mac> lockimg.bin --addr 0x300000 --verify --reboot`.
@@ -5872,6 +6005,8 @@ index 8cbf236..fa055ea 100644
 +    return &lock_wallpaper;
 +}
 +
++#endif
++
 +/* ---- Lock / screensaver: display + touch OFF, CPU running; a hardware key wakes ----
 + * Boot enters this state; the menu's "Lock" button returns to it. While locked the main
 + * loop skips LVGL and only polls the ADKEY value g_badge_adkey_kv (kept fresh by the key-scan
@@ -5902,7 +6037,10 @@ index 8cbf236..fa055ea 100644
 +    lcd_reinit_wait_finish();     /* blocks until the panel re-init finishes */
 +    lcd_drv_backlight_ctrl(g_bright_pct[g_bright_idx]);   /* backlight back to the saved brightness */
 +    badge_touch_set_enable(1);    /* resumes touch (re-inits the AXS5106L; see board file) */
-+    g_badge_locked = 0;           /* the main loop resumes -> renders the lock image */
++    g_badge_locked = 0;
++#ifdef CONFIG_BADGE_MEDIA_UI
++    badge_media_ui_home();         /* restart the selected clip, or repaint the static item */
++#endif
 +    lv_obj_invalidate(g_lock_scr);/* forces a full redraw */
 +}
 +
@@ -6042,8 +6180,12 @@ index 8cbf236..fa055ea 100644
 +static void settings_back_cb(lv_event_t *e)
 +{
 +    (void)e;
++#ifdef CONFIG_BADGE_MEDIA_UI
++    badge_media_ui_menu();
++#else
 +    lv_scr_load(g_menu_scr);
 +    kp_set_menu();
++#endif
 +}
 +
 +/* Advances the backlight one step and relabels the button. Wraps from max to the
@@ -6053,6 +6195,9 @@ index 8cbf236..fa055ea 100644
 +    (void)e;
 +    extern int lcd_drv_backlight_ctrl(u8 percent);
 +    g_bright_idx = (g_bright_idx + 1) % BADGE_BRIGHT_STEPS;
++#ifdef CONFIG_BADGE_MEDIA_UI
++    badge_media_ui_save_brightness(g_bright_pct[g_bright_idx]);
++#endif
 +    lcd_drv_backlight_ctrl(g_bright_pct[g_bright_idx]);
 +    if (g_bright_lbl) {
 +        lv_label_set_text_fmt(g_bright_lbl, "Brightness %d/%d",
@@ -6618,7 +6763,12 @@ index 8cbf236..fa055ea 100644
 +static void badge_menu_build(void)
 +{
 +    static const char *const items[4] = {
-+        "Bluetooth Spoofing", "Bluetooth Mouse", "Bluetooth Scanner", "Settings"
++        "Bluetooth Spoofing", "Bluetooth Mouse", "Bluetooth Scanner",
++#ifdef CONFIG_BADGE_MEDIA_UI
++        "Back"
++#else
++        "Settings"
++#endif
 +    };
 +    printf("menu: build\n");
 +
@@ -6802,6 +6952,7 @@ index 8cbf236..fa055ea 100644
 +    g_lock_scr = lv_obj_create(NULL);
 +    lv_obj_clear_flag(g_lock_scr, LV_OBJ_FLAG_SCROLLABLE);
 +    lv_obj_set_style_bg_color(g_lock_scr, lv_color_black(), 0);
++#ifndef CONFIG_BADGE_MEDIA_UI
 +    lv_obj_add_event_cb(g_lock_scr, lock_gesture_cb, LV_EVENT_GESTURE, NULL);
 +    {
 +        /* Fallback label (created first, only visible if the image fails to render). */
@@ -6825,6 +6976,7 @@ index 8cbf236..fa055ea 100644
 +        lv_obj_add_flag(img, LV_OBJ_FLAG_GESTURE_BUBBLE);
 +    }
 +
++#endif
 +    /* Menu screen: title + one button per tool. */
 +    lv_obj_t *scr = lv_scr_act();
 +    g_menu_scr = scr;
@@ -6834,16 +6986,25 @@ index 8cbf236..fa055ea 100644
 +    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
 +    lv_obj_t *title = lv_label_create(scr);
 +    lv_obj_set_style_text_color(title, lv_color_white(), 0);
++#ifdef CONFIG_BADGE_MEDIA_UI
++    lv_label_set_text(title, "Tools");
++#else
 +    lv_label_set_text(title, "BADGE TOOL");
++#endif
 +    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 24);
 +    for (int i = 0; i < 4; i++) {
 +        lv_obj_t *btn = g_menu_btns[i] = lv_btn_create(scr);
 +        lv_obj_set_size(btn, 280, 56);
 +        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 70 + i * 68);
 +        /* item 1 = Mouse (trackpad), item 2 = Scanner, item 3 = Ajustes (settings), others = detail stub. */
-+        lv_obj_add_event_cb(btn,
-+                            i == 1 ? mouse_open_cb : (i == 2 ? scanner_open_cb : (i == 3 ? settings_open_cb : spoof_open_cb)),
-+                            LV_EVENT_SHORT_CLICKED, (void *)items[i]);
++        lv_event_cb_t actions[4] = {spoof_open_cb, mouse_open_cb, scanner_open_cb,
++#ifdef CONFIG_BADGE_MEDIA_UI
++            media_menu_open
++#else
++            settings_open_cb
++#endif
++        };
++        lv_obj_add_event_cb(btn, actions[i], LV_EVENT_SHORT_CLICKED, (void *)items[i]);
 +        lv_obj_t *lbl = lv_label_create(btn);
 +        lv_label_set_text(lbl, items[i]);
 +        lv_obj_center(lbl);
@@ -6870,7 +7031,18 @@ index 8cbf236..fa055ea 100644
 +     * touch off, so the badge powers on black (no RGB splash). A hardware key wakes it to the
 +     * lock image; a swipe opens the menu; the menu's "Lock" button returns here. */
 +    badge_menu_build();
-+#ifdef CONFIG_BADGE_BOARD_DG01
++#ifdef CONFIG_BADGE_MEDIA_UI
++    unsigned int brightness = badge_media_ui_init(g_lock_scr, g_kp_group,
++                                                  settings_open_cb, media_tools_open,
++                                                  badge_ble_battery_gate);
++    for (unsigned int i = 0; i < BADGE_BRIGHT_STEPS; ++i) {
++        if (g_bright_pct[i] == brightness) g_bright_idx = i;
++    }
++    lv_label_set_text_fmt(g_bright_lbl, "Brightness %d/%d", g_bright_idx + 1, BADGE_BRIGHT_STEPS);
++    extern int lcd_drv_backlight_ctrl(u8 percent);
++    lcd_drv_backlight_ctrl(g_bright_pct[g_bright_idx]);
++    badge_media_ui_home();
++#elif defined(CONFIG_BADGE_BOARD_DG01)
 +    /* DG01: boot with the DISPLAY ON, not suspended.
 +     *
 +     * This board has a single button (PB7) and its wake path has never been exercised on
@@ -6894,7 +7066,7 @@ index 8cbf236..fa055ea 100644
  #if LV_USE_MONKEY != 0
      /*Create pointer monkey test*/
      lv_monkey_config_t monkey_pointer_config;
-@@ -1025,7 +2521,9 @@ static void lvgl_main_task(void *priv)
+@@ -1025,7 +2599,9 @@ static void lvgl_main_task(void *priv)
      lv_port_fs_init();
      lv_port_disp_init(priv);
      lv_port_indev_init();
@@ -6905,7 +7077,7 @@ index 8cbf236..fa055ea 100644
      lv_ui_src_pack_mode_init();
  
  #if LV_USE_GPU_COMPRESS
-@@ -1054,6 +2552,259 @@ static void lvgl_main_task(void *priv)
+@@ -1054,6 +2630,283 @@ static void lvgl_main_task(void *priv)
  
      ui_sysinfo_init();
  
@@ -6952,6 +7124,10 @@ index 8cbf236..fa055ea 100644
 +                static u8 s_upd_dimmed = 0;
 +                u8 chg_now = get_charge_online_flag();
 +                u8 upd_session = (g_badge_update_active || g_on_update_scr);
++#ifdef CONFIG_BADGE_MEDIA_UI
++                /* Charging never takes the media off screen. Keep the existing OTA dimming. */
++                g_charge_waiting = upd_session;
++#else
 +                if (chg_now && !g_charge_last_online) {              /* plug edge */
 +                    g_charge_waiting = upd_session;
 +                    if (!g_charge_waiting) {
@@ -6966,6 +7142,7 @@ index 8cbf236..fa055ea 100644
 +                    g_charge_waiting = 0;              /* update session over: charge takes over */
 +                    badge_charge_screen_enter();
 +                }
++#endif
 +                /* Dim only while actually waiting on USB; restore as soon as either ends. */
 +                if (chg_now && g_charge_waiting && !s_upd_dimmed) {
 +                    s_upd_dimmed = 1;
@@ -7046,10 +7223,21 @@ index 8cbf236..fa055ea 100644
 +                    u8 acted = 0;
 +                    if (act == g_lock_scr) {
 +                        if (edge == KEY_AD_NUM0)      { badge_lock_enter(); acted = 1; }            /* back  -> suspend */
-+                        else if (edge == KEY_AD_NUM1) { lv_scr_load(g_menu_scr); kp_set_menu(); acted = 1; }  /* other -> unlock */
-+                    } else if (act == g_menu_scr) {
-+                        if (edge == KEY_AD_NUM0)      { badge_lock_show(); acted = 1; }             /* back  -> lock */
++                        else if (edge == KEY_AD_NUM1) {
++#ifdef CONFIG_BADGE_MEDIA_UI
++                            badge_media_ui_menu();
++#else
++                            lv_scr_load(g_menu_scr);
++                            kp_set_menu();
++#endif
++                            acted = 1;
++                        }
 +                    }
++#ifndef CONFIG_BADGE_MEDIA_UI
++                    else if (act == g_menu_scr) {
++                        if (edge == KEY_AD_NUM0) { badge_lock_show(); acted = 1; }
++                    }
++#endif
 +                    if (acted) {
 +                        while (g_badge_adkey_kv != NO_KEY) { os_time_dly(2); }  /* wait for release */
 +                        s_lock_prev_kv = NO_KEY;
@@ -7156,8 +7344,16 @@ index 8cbf236..fa055ea 100644
 +                }
 +            }
 +
++#ifdef CONFIG_BADGE_MEDIA_UI
++            extern u8 badge_touch_set_idle(u8 idle);
++            unsigned int ticks = badge_media_ui_tick();
++            if (badge_touch_set_idle(ticks > 1)) ticks = 1;
++            lv_timer_handler();
++            os_time_dly(ticks);
++#else
 +            lv_timer_handler();
 +            os_time_dly(1);   /* ~10 ms */
++#endif
 +        }
 +    }
 +#endif
@@ -7324,6 +7520,106 @@ index ee2e4d7..5a64680 100644
      struct key_event *key_e = (struct key_event *)indev_drv->user_data;
  
      if (ui_scr_key_event_handler(key_e)) {
+diff --git a/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgd.c b/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgd.c
+index 414db8a..069d047 100644
+--- a/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgd.c
++++ b/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgd.c
+@@ -31,7 +31,7 @@
+ /----------------------------------------------------------------------------*/
+ 
+ #include "tjpgd.h"
+-#if LV_USE_SJPG
++#if defined(CONFIG_BADGE_MENU) || LV_USE_SJPG
+ 
+ #if JD_FASTDECODE == 2
+ #define HUFF_BIT	10	/* Bit length to apply fast huffman decode */
+@@ -1104,6 +1104,9 @@ JRESULT jd_prepare(
+         }
+         ofs++;
+         marker = marker << 8 | seg[0];
++#ifdef CONFIG_BADGE_MENU
++        if (ofs == 2 && marker != 0xFFD8) return JDR_FMT1;
++#endif
+     } while (marker != 0xFFD8);
+ 
+     for (;;) {				/* Parse JPEG segments */
+@@ -1112,6 +1115,9 @@ JRESULT jd_prepare(
+             return JDR_INP;
+         }
+         marker = LDB_WORD(seg);		/* Marker */
++#ifdef CONFIG_BADGE_MENU
++        jd->input_marker = marker;
++#endif
+         len = LDB_WORD(seg + 2);	/* Length field */
+         if (len <= 2 || (marker >> 8) != 0xFF) {
+             return JDR_FMT1;
+@@ -1128,6 +1134,7 @@ JRESULT jd_prepare(
+                 return JDR_INP;    /* Load segment data */
+             }
+ 
++            if (len < 6 || len != 6u + 3u * seg[5] || seg[0] != 8) return JDR_FMT1;
+             jd->width = LDB_WORD(&seg[3]);		/* Image width in unit of pixel */
+             jd->height = LDB_WORD(&seg[1]);		/* Image height in unit of pixel */
+             jd->ncomp = seg[5];					/* Number of color components */
+@@ -1164,6 +1171,7 @@ JRESULT jd_prepare(
+                 return JDR_INP;    /* Load segment data */
+             }
+ 
++            if (len != 2) return JDR_FMT1;
+             jd->nrst = LDB_WORD(seg);	/* Get restart interval (MCUs) */
+             break;
+ 
+@@ -1206,6 +1214,7 @@ JRESULT jd_prepare(
+             if (!jd->width || !jd->height) {
+                 return JDR_FMT1;    /* Err: Invalid image size */
+             }
++            if (len != 4u + 2u * jd->ncomp) return JDR_FMT1;
+             if (seg[0] != jd->ncomp) {
+                 return JDR_FMT3;    /* Err: Wrong color components */
+             }
+diff --git a/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgd.h b/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgd.h
+index cc55f3f..254f033 100644
+--- a/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgd.h
++++ b/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgd.h
+@@ -8,8 +8,10 @@
+ extern "C" {
+ #endif
+ 
++#ifndef CONFIG_BADGE_MENU
+ #include "../../../lv_conf_internal.h"
+-#if LV_USE_SJPG
++#endif
++#if defined(CONFIG_BADGE_MENU) || LV_USE_SJPG
+ 
+ #include "tjpgdcnf.h"
+ #include <string.h>
+@@ -46,6 +48,9 @@ typedef struct {
+ /* Decompressor object structure */
+ typedef struct JDEC JDEC;
+ struct JDEC {
++#ifdef CONFIG_BADGE_MENU
++    uint16_t input_marker;     /* Let the badge inspect EXIF while streaming skipped APP1 data. */
++#endif
+     size_t dctr;				/* Number of bytes available in the input buffer */
+     uint8_t *dptr;				/* Current data read ptr */
+     uint8_t *inbuf;				/* Bit stream input buffer */
+diff --git a/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgdcnf.h b/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgdcnf.h
+index 6d425e6..2c95949 100644
+--- a/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgdcnf.h
++++ b/SDK/apps/common/ui/lvgl_v8/src/extra/libs/sjpg/tjpgdcnf.h
+@@ -5,7 +5,11 @@
+ #define	JD_SZBUF		512
+ /* Specifies size of stream input buffer */
+ 
+-#define JD_FORMAT		0
++#ifdef CONFIG_BADGE_MENU
++#define JD_FORMAT 1  /* RGB565, native LVGL byte order */
++#else
++#define JD_FORMAT 0
++#endif
+ /* Specifies output pixel format.
+ /  0: RGB888 (24-bit/pix)
+ /  1: RGB565 (16-bit/pix)
 diff --git a/SDK/apps/common/ui/lvgl_v8/src/font/lv_font_montserrat_36.c b/SDK/apps/common/ui/lvgl_v8/src/font/lv_font_montserrat_36.c
 index ec6407a..77321cf 100644
 --- a/SDK/apps/common/ui/lvgl_v8/src/font/lv_font_montserrat_36.c
@@ -16103,19 +16399,22 @@ index 750ca30..5001168 100644
  #if TCFG_APP_BT_EN
      u8 check_update_param_len(void);
 diff --git a/SDK/apps/watch/app_main.c b/SDK/apps/watch/app_main.c
-index eb881b5..a8e0806 100644
+index eb881b5..d6f36ed 100644
 --- a/SDK/apps/watch/app_main.c
 +++ b/SDK/apps/watch/app_main.c
-@@ -74,6 +74,8 @@ const struct task_info task_info_table[] = {
+@@ -73,6 +73,11 @@ const struct task_info task_info_table[] = {
+ #if TCFG_PAY_TRANSITCODE_ENABLE
      //乘车码应用使用完要kill 任务 对栈占用厉害
      {"transitcode",         1,      0,  2048 + 2048 + 2048 + 1024,  512 },
- #endif
++#endif
 +    {"lcd_test",            8 + TASK_PRIO_BASE,     0,  1024,   256 },  // badge: LCD boot test (green/red/blue/cat)
 +    {"axs_poll",            8 + TASK_PRIO_BASE,     0,   512,   0   },  // badge: AXS5106L touch poll task (LVGL menu)
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++    {"badge_decode",        2 + TASK_PRIO_BASE,     0,  1536,   0   },
+ #endif
      {"btctrler",            4 + TASK_PRIO_BASE,     0,   512,   512 },
      {"btencry",             1 + TASK_PRIO_BASE,     0,   512,   128 },
- #if (BT_FOR_APP_EN)
-@@ -116,7 +118,7 @@ const struct task_info task_info_table[] = {
+@@ -116,7 +121,7 @@ const struct task_info task_info_table[] = {
      {"update",				1 + TASK_PRIO_BASE,	   0,   512,   0   },
      {"tws_ota",				2 + TASK_PRIO_BASE,	   0,   256,   0   },
      {"tws_ota_msg",			2 + TASK_PRIO_BASE,	   0,   256,   128 },
@@ -16124,7 +16423,7 @@ index eb881b5..a8e0806 100644
      {"aud_capture",         4 + TASK_PRIO_BASE,     0,   512,   256 },
      {"data_export",         5 + TASK_PRIO_BASE,     0,   512,   256 },
      {"anc",                 3 + TASK_PRIO_BASE,     0,   512,   128 },
-@@ -310,9 +312,17 @@ void arch_trim()
+@@ -310,9 +315,17 @@ void arch_trim()
  
  }
  
@@ -16396,7 +16695,7 @@ index 5792ccd..c728f9b 100644
  
  #else
 diff --git a/SDK/apps/watch/board/br35/board_ac707n_demo/board_ac707n_demo.c b/SDK/apps/watch/board/br35/board_ac707n_demo/board_ac707n_demo.c
-index e006cb3..1a1644c 100644
+index e006cb3..83ad938 100644
 --- a/SDK/apps/watch/board/br35/board_ac707n_demo/board_ac707n_demo.c
 +++ b/SDK/apps/watch/board/br35/board_ac707n_demo/board_ac707n_demo.c
 @@ -210,7 +210,7 @@ struct linein_dev_data linein_data = {
@@ -16424,7 +16723,7 @@ index e006cb3..1a1644c 100644
  #if TCFG_APP_RTC_EN
      rtc_dev_init(&rtc_dev_config);
  #endif
-@@ -683,6 +692,591 @@ void board_gpio_config_soft_poweroff(u32 *gpio_config)
+@@ -683,6 +692,614 @@ void board_gpio_config_soft_poweroff(u32 *gpio_config)
  }
  
  
@@ -16912,6 +17211,18 @@ index e006cb3..1a1644c 100644
 + * axs_poll_task's one-time init (which sets g_axs_ready). */
 +static volatile u8 g_tp_reinit_req = 0;   /* wake path asks the poll task to re-init */
 +
++static volatile u8 g_tp_cdown = 0;
++#ifdef CONFIG_BADGE_BOARD_E87
++static OS_SEM media_touch_wake;
++static volatile u8 media_touch_idle;
++
++u8 badge_touch_set_idle(u8 idle)
++{
++    media_touch_idle = idle;
++    return g_tp_cdown;
++}
++#endif
++
 +void badge_touch_set_enable(u8 en)
 +{
 +    g_axs_want = en ? 1 : 0;
@@ -16923,6 +17234,9 @@ index e006cb3..1a1644c 100644
 +         * axs_reset's ~300ms delay is safe here. Confirmed on UART: without this, "want=1 ready=1
 +         * but the read FAILS" after every wake. */
 +        g_tp_reinit_req = 1;    /* the poll task owns the bus; ask it to re-init */
++#ifdef CONFIG_BADGE_BOARD_E87
++        os_sem_post(&media_touch_wake);
++#endif
 +    } else {
 +        g_tp_reinit_req = 0;    /* lock raced the wake: drop it, the rail is going away */
 +    }
@@ -16932,7 +17246,7 @@ index e006cb3..1a1644c 100644
 + * in ONE word so a reader cannot take x from sample N and y from sample N+1 and report a
 + * point that never existed (visible as a one-frame cursor jump on the Mouse trackpad). */
 +static volatile u32 g_tp_cxy = 0;      /* (x << 16) | y */
-+static volatile u8  g_tp_cdown = 0;
++
 +
 +static void axs_poll_task(void *priv)
 +{
@@ -16961,7 +17275,12 @@ index e006cb3..1a1644c 100644
 +        } else {
 +            g_tp_cdown = 0;
 +        }
-+        os_time_dly(2);     /* ~20 ms: well inside LVGL's input period, off its timer */
++#ifdef CONFIG_BADGE_BOARD_E87
++        while (!g_axs_want) os_sem_pend(&media_touch_wake, 0);
++        os_time_dly(media_touch_idle && !g_tp_cdown ? 4 : 2);
++#else
++        os_time_dly(2);
++#endif
 +    }
 +}
 +
@@ -17007,6 +17326,9 @@ index e006cb3..1a1644c 100644
 + * LVGL's read_timer callback. get_touch_x_y_status() then only reads its cache. */
 +static int axs_poll_start(void)
 +{
++#ifdef CONFIG_BADGE_BOARD_E87
++    os_sem_create(&media_touch_wake, 0);
++#endif
 +    task_create(axs_poll_task, NULL, "axs_poll");
 +    return 0;
 +}
@@ -25555,6 +25877,21 @@ index 2d60c68..c06b9ec 100644
  
  #ifdef TCFG_TOUCH_PANEL_ENABLE
  #undef TCFG_TOUCH_PANEL_ENABLE
+diff --git a/SDK/apps/watch/include/user_cfg_id.h b/SDK/apps/watch/include/user_cfg_id.h
+index 4f233f8..739fbf4 100644
+--- a/SDK/apps/watch/include/user_cfg_id.h
++++ b/SDK/apps/watch/include/user_cfg_id.h
+@@ -58,6 +58,10 @@
+ 
+ #define     CFG_VBG_TRIM                    47	//保存VBG配置参数id
+ 
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++#define     CFG_BADGE_MEDIA_PREFS        48
++#endif
++
+ //#MAX 50
+ //=================================================================================//
+ //            	SDK配置拓展配置项 使用 [145 ~200]        	                       //
 diff --git a/SDK/apps/watch/log_config/lib_btctrler_config.c b/SDK/apps/watch/log_config/lib_btctrler_config.c
 index c1546de..31e2d93 100644
 --- a/SDK/apps/watch/log_config/lib_btctrler_config.c
@@ -25643,10 +25980,32 @@ index 5c2a73e..536af01 100644
  #else
  const int UI_GPU_IRQ_MODE  	  = 0;
 diff --git a/SDK/apps/watch/mode/bt/bt.c b/SDK/apps/watch/mode/bt/bt.c
-index 2beb3a0..98efe29 100644
+index 2beb3a0..2472ca9 100644
 --- a/SDK/apps/watch/mode/bt/bt.c
 +++ b/SDK/apps/watch/mode/bt/bt.c
-@@ -344,6 +344,17 @@ void bt_function_select_init()
+@@ -35,6 +35,9 @@
+ #include "spp_online_db.h"
+ 
+ #include "bt_event_func.h"
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++#include "badge_opp.h"
++#endif
+ 
+ #if TCFG_AUDIO_ANC_ENABLE
+ #include "audio_anc.h"
+@@ -313,7 +316,11 @@ void bt_function_select_init()
+      * 0: Display only 1: Display YesNo 2: KeyboardOnly 3: NoInputNoOutput
+      *  authentication_requirements: 0:not protect  1 :protect
+     */
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++    bt_set_simple_pair_param(1, 0, 3); /* DisplayYesNo, dedicated bonding with MITM. */
++#else
+     bt_set_simple_pair_param(3, 0, 2);
++#endif
+ 
+     /*测试盒连接获取参数需要的一些接口注册*/
+     bt_testbox_ex_info_get_handle_register(TESTBOX_INFO_VBAT_VALUE, get_vbat_value);
+@@ -344,6 +351,17 @@ void bt_function_select_init()
      __change_hci_class_type(BD_CLASS_CAR_AUDIO);
  #endif
  
@@ -25664,7 +26023,29 @@ index 2beb3a0..98efe29 100644
  #if TCFG_BT_CALL_PHONE_BY_WATCH
      lmp_negotiate_esco_parm(1);
  #endif
-@@ -845,7 +856,9 @@ static int app_bt_init()
+@@ -385,6 +403,9 @@ static int bt_connction_status_event_handler(struct bt_event *bt)
+         log_info("BT_STATUS_INIT_OK\n");
+ 
+         bt_status_init_ok();
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++        badge_opp_bt_ready();
++#endif
+         break;
+ 
+     case BT_STATUS_SECOND_CONNECTED:
+@@ -591,7 +612,11 @@ static int bt_hci_event_handler(struct bt_event *bt)
+     case HCI_EVENT_USER_CONFIRMATION_REQUEST:
+         log_info(" HCI_EVENT_USER_CONFIRMATION_REQUEST \n");
+         ///<可通过按键来确认是否配对 1：配对   0：取消
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++        badge_opp_pair_request(bt->args, bt->value);
++#else
+         bt_send_pair(1);
++#endif
+         break;
+     case HCI_EVENT_USER_PASSKEY_REQUEST:
+         log_info(" HCI_EVENT_USER_PASSKEY_REQUEST \n");
+@@ -845,7 +870,9 @@ static int app_bt_init()
          play_tone_file_callback(get_tone_files()->bt_mode, NULL, bt_tone_play_end_callback);
  #else
          tone_player_stop();
@@ -25675,7 +26056,48 @@ index 2beb3a0..98efe29 100644
  #endif
      }
  #if (TCFG_BT_BACKGROUND_ENABLE)
-@@ -1348,6 +1361,62 @@ u8 is_bredr_close(void)
+@@ -1139,6 +1166,40 @@ static int bt_init_bredr_do(int priv)
+     return 0;
+ }
+ 
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++static void badge_bredr_transition(int on, OS_SEM *done)
++{
++    ++bt_bredr_cnt;
++    if (on) {
++        bt_init_bredr_do(bt_bredr_cnt);
++        bt_close_bredr_timeout_stop();
++    } else {
++        bt_close_bredr_do(bt_bredr_cnt);
++    }
++    if (done) os_sem_post(done);
++}
++
++int badge_opp_set_bredr(int on)
++{
++    if (!strcmp(os_current_task(), "app_core")) {
++        badge_bredr_transition(on, NULL);
++        return 0;
++    }
++    OS_SEM done;
++    if (os_sem_create(&done, 0)) return -1;
++    int args[] = {(int)badge_bredr_transition, 2, on, (int)&done};
++    int err;
++    do {
++        err = os_taskq_post_type("app_core", Q_CALLBACK, 4, args);
++        if (err == OS_Q_FULL) os_time_dly(1);
++    } while (err == OS_Q_FULL);
++    /* BLE maintenance may start as soon as the Receive screen returns. */
++    if (!err) os_sem_pend(&done, 0);
++    os_sem_del(&done, OS_DEL_NO_PEND);
++    return err;
++}
++#endif
++
+ static int bredr_conn_last_dev_do(int priv)
+ {
+     u16 do_cnt = priv;
+@@ -1348,6 +1409,62 @@ u8 is_bredr_close(void)
      printf("%s,g_bt_hdl.bt_close_bredr=%d", __func__, g_bt_hdl.bt_close_bredr);
      return g_bt_hdl.bt_close_bredr;
  }
@@ -25761,24 +26183,37 @@ index eb4c662..6c0ab4e 100644
          printf("bt_wait_connect_and_phone_connect_switch\n");
          bt_clear_current_poweron_memory_search_index(1);
 diff --git a/SDK/apps/watch/mode/bt/dual_conn.c b/SDK/apps/watch/mode/bt/dual_conn.c
-index 09e9fdd..423084c 100644
+index 09e9fdd..827652e 100644
 --- a/SDK/apps/watch/mode/bt/dual_conn.c
 +++ b/SDK/apps/watch/mode/bt/dual_conn.c
-@@ -63,6 +63,13 @@ static void auto_close_page_scan(void *p)
+@@ -11,6 +11,9 @@
+ #include "user_cfg.h"
+ #include "bt_background.h"
+ #include "bt_event_func.h"
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++#include "badge_opp.h"
++#endif
+ 
+ #if TCFG_APP_BT_EN
+ #if(TCFG_USER_TWS_ENABLE == 0)
+@@ -63,6 +66,16 @@ static void auto_close_page_scan(void *p)
  
  static void write_scan_conn_enable(bool scan_enable, bool conn_enable)
  {
 +#ifdef CONFIG_BADGE_MENU
-+    /* Classic BR/EDR is never discoverable/connectable (so phones can't grab the classic audio
-+     * side). With separate BLE/classic addresses (TCFG_BT_BLE_BREDR_SAME_ADDR=0) this no longer
-+     * affects the BLE radio. */
-+    scan_enable = 0;
-+    conn_enable = 0;
++    /* Only the E87 Receive screen advertises its Classic file service. */
++#ifdef CONFIG_BADGE_BOARD_E87
++    if (!badge_opp_classic_enabled())
++#endif
++    {
++        scan_enable = 0;
++        conn_enable = 0;
++    }
 +#endif
      if (g_dual_conn.page_scan_auto_disable) {
          if (!scan_enable && conn_enable) {
              return;
-@@ -292,6 +299,20 @@ static void dual_conn_page_devices_init()
+@@ -292,6 +305,20 @@ static void dual_conn_page_devices_init()
      g_dual_conn.page_head_inited = 1;
      g_dual_conn.page_scan_auto_disable = 0;
  
@@ -25876,10 +26311,26 @@ index 8b6e87e..32869c0 100644
  else
  $(OUT_ELF): $(OBJS)
 diff --git a/SDK/build/genFileList.c b/SDK/build/genFileList.c
-index 415f592..4bb9f0a 100644
+index 415f592..e3894b1 100644
 --- a/SDK/build/genFileList.c
 +++ b/SDK/build/genFileList.c
-@@ -464,6 +464,8 @@ c_SRC_FILES += \
+@@ -1,5 +1,15 @@
+ #include "app_config.h"
+ 
++#if defined(CONFIG_BADGE_MENU) && defined(CONFIG_BADGE_BOARD_E87)
++c_SRC_FILES += \
++    apps/common/ui/lvgl_v8/badge_media_codec.c \
++    apps/common/ui/lvgl_v8/badge_media_import.c \
++    apps/common/ui/lvgl_v8/badge_media_store.c \
++    apps/common/ui/lvgl_v8/badge_media_ui.c \
++    apps/common/ui/lvgl_v8/badge_opp.c \
++
++#endif
++
+ // *INDENT-OFF*
+ 
+ 
+@@ -464,6 +474,8 @@ c_SRC_FILES += \
  c_SRC_FILES += \
  	apps/common/third_party_profile/jieli/rcsp/ble_rcsp_multi_common.c \
  	apps/common/third_party_profile/jieli/rcsp/ble_rcsp_server.c \

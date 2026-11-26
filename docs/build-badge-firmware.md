@@ -1,33 +1,29 @@
 # Build the custom badge firmware from source
 
-End-to-end, reproducible build of the **custom badge-menu firmware** (LVGL touch UI + BLE
-tools) for the JieLi **AC707N / BR35 e-badge (E87)**, on Linux.
-
-> ⚠️ Security research / educational use only, on hardware you own — see
-> [DISCLAIMER.md](../DISCLAIMER.md).
-
-The firmware is kept as a **patch on top of the vanilla JieLi SDK**, which is *not* stored in
-this repo: it is a git submodule pointing at JieLi's own GitLab. Nothing proprietary is
-redistributed here — you fetch it from the vendor yourself.
+Build the E87 media firmware on x86-64 Linux. The build combines the gallery
+sources in this repository with board support from a patch to the pinned JieLi
+SDK. Setup fetches the SDK directly from JieLi.
 
 ---
 
 ## TL;DR
 
 ```sh
-git clone https://github.com/ElectronicCats/jieli-ble-badge-research
-cd jieli-ble-badge-research
+git clone https://github.com/guilhem/jieli-ble-badge
+cd jieli-ble-badge
 
-scripts/setup-badge-build.sh                  # once: toolchain + SDK + patch + tools + chipkey
-scripts/build-badge-fw.sh --ota               # E87 badge  (default board)
-scripts/build-badge-fw.sh --board dg01 --ota  # DG01 wristband
+scripts/setup-badge-build.sh --skip-postbuild
+scripts/build-badge-fw.sh --board e87 --ota
 ```
 
 First run is dominated by the 1.1 GB SDK clone — a few minutes on a good link to JieLi's CN
 infrastructure, considerably longer on a bad one. After that: **~90 s** for a clean rebuild,
 **~5 s** incremental (measured on this repo's reference build).
 
-Flash the resulting image over BLE with `qix flash <MAC> <image>.ufw --oem` (E87) or
+For the separate DG01 build, run setup without `--skip-postbuild` and use
+`scripts/build-badge-fw.sh --board dg01 --ota`.
+
+Install the resulting image over BLE with `qix flash <MAC> <image>.ufw --oem` (E87) or
 `qix rcsp-flash <MAC> <image>.ufw` (DG01) — see [ota-howto.md](ota-howto.md). The build
 prints the exact command for the board it just built.
 
@@ -54,9 +50,9 @@ already in place.
 
 | # | Piece | Source | Lands in |
 |---|---|---|---|
-| 1 | **pi32v2 toolchain** (JieLi's clang 4.0.1 fork, target `pi32v2 -mcpu=r3`) | `pkgman.jieliapp.com/s/linux-toolchain` (public, no account) | `tools/jieli-toolchain/` + `/opt/jieli` symlink |
+| 1 | **pi32v2 toolchain** (JieLi's clang 4.0.1 fork, target `pi32v2 -mcpu=r3`) | [Pinned JieLi archive](https://jl-update.oss-cn-shenzhen.aliyuncs.com/jieli-linux-toolchains-20250805.1.tar.xz) | `tools/jieli-toolchain/` + `/opt/jieli` symlink |
 | 2 | **Vanilla JieLi SDK** | `gitlab.zh-jieli.com/e_badge/e_badge_707_sdk_200`, git submodule pinned at `d016768` | `tools/community-re/jieli-sdks/e_badge_707_sdk_200` |
-| 3 | **badge-menu patch** (the custom firmware: 49 files, ~4.8 k lines of code plus ~10.7 k lines of embedded image data) | this repo, `patches/badge/badge-menu.patch` | applied into the SDK worktree |
+| 3 | **badge-menu patch** (board and Bluetooth integration) | this repo, `patches/badge/badge-menu.patch` | applied into the SDK worktree |
 | 4 | **Native post-build tools** (`isd_download`, `ufw_maker`, `fw_add`, `packres`, `json_to_res`, `fat_comm`, `remove_tailing_zeros`) | `pkgman.jieliapp.com/s/linux-postbuild` (public, no account) | `SDK/tools/linux/` |
 | 5 | **Chipkey** `chipkey_9847.bin` | this repo, `tools/chipkey/` | `SDK/cpu/br35/tools/download/watch/` |
 
@@ -131,25 +127,22 @@ drivers** — an image built for one does not work on the other:
 | OTA image | Qix-wrapped *fw-custom* | vanilla `.ufw`, app-only, re-keyed |
 | Flash command | `qix flash <MAC> <img> --oem` | `qix rcsp-flash <MAC> <img>` |
 
-`--board` sets `BOARD=` on the make line, which defines `CONFIG_BADGE_BOARD_E87` or
-`CONFIG_BADGE_BOARD_DG01`. That define does exactly one thing: it flips
-`TCFG_LCD_SPI_ST77916_ENABLE` / `TCFG_LCD_SPI_BADGE2_ENABLE` in
-`board_ac707n_demo_cfg.h`. Every other board difference — the touch pins, the touch driver,
-the ADKEY thresholds, the screen size — is already gated on `TCFG_LCD_SPI_BADGE2_ENABLE` in
-`board_ac707n_demo.c`, `board/adkey_config.c` and `ui/lcd/lcd_conf.h`, so that one knob
-carries the whole board.
+`--board` sets `BOARD=` on the make line. This selects the matching LCD, touch and button
+drivers. The [media gallery and Bluetooth Object Push receiver](badge-media.md) are built
+for `e87`. The build script copies their sources from `firmware/badge-media/` into the SDK
+before compilation.
 
-Switching boards **forces a full rebuild**: `BOARD=` only changes `-D` defines, which this
-SDK's Makefile does not track as a dependency, so an incremental build would silently mix
-objects from both panels. The script stamps the board in
-`SDK/cpu/br35/tools/.badge-board` and runs `make clean` itself whenever it changes.
+Switching boards or using `--no-menu` triggers a full rebuild when the configuration
+changes. This prevents objects from the previous configuration from entering the link.
 
 ### The equivalent by hand
 
 ```sh
 export PATH="/opt/jieli/pi32v2/bin:$PATH"
 ulimit -n 65536
-cd tools/community-re/jieli-sdks/e_badge_707_sdk_200/SDK
+SDK=tools/community-re/jieli-sdks/e_badge_707_sdk_200/SDK
+cp firmware/badge-media/*.[ch] "$SDK/apps/common/ui/lvgl_v8/"
+cd "$SDK"
 make clean && BADGE_CHIPKEY=9847 make MENU=1 BOARD=e87      # or BOARD=dg01
 ```
 
@@ -174,19 +167,9 @@ patch).
 The badge's OEM BLE OTA hands the image to the **resident OEM uboot**, which is what rewrites
 the CODE partition. An SDK-built `update.ufw` carries the *native* uboot instead and the badge
 bricks silently at apply. So the OTA image is built by splicing your fresh `app.bin` into an
-existing image that already has the OEM uboot, flash geometry and Qix wrapper:
-
-```sh
-python3 tools/ufw-repack/swap_app.py \
-    firmware/custom-fw-ac707n.ufw \        # base: read-only, for OEM geometry
-    <SDK>/cpu/br35/tools/app.bin \         # your build
-    firmware-builds/my-build.ufw           # output
-```
-
-`--ota` does exactly this. `swap_app.py` recomputes every CRC (JLFS `app.bin`,
-`app_area_head`, `flash.bin`, list/header, Qix wrapper), so the output is flash-ready. Two
-builds of the same source differ in the embedded `__TIME__` bytes and the CRCs covering them —
-**a byte-different `.ufw` of the same size is expected**; don't compare by sha256. Full
+existing image that already carries the OEM bootloader, flash geometry and Qix
+wrapper. The build script does this with `--ota` and prints the packaged image
+path. Use the file under `firmware-builds/` for installation. Full
 protocol details in [ota-howto.md](ota-howto.md).
 
 ---
@@ -264,8 +247,8 @@ only see it if you invoke it by hand. Ignore the R2 line; R1 (app fits the OEM s
 
 ## 6. Modifying the firmware
 
-The SDK worktree is a normal git checkout: edit sources in it, rebuild, and when you are happy
-regenerate the patch so the change is tracked in *this* repo:
+Edit the media sources in `firmware/badge-media/`. For changes to the SDK integration,
+edit the SDK worktree and regenerate the patch:
 
 ```sh
 SDK=tools/community-re/jieli-sdks/e_badge_707_sdk_200
@@ -273,6 +256,7 @@ cd "$SDK"
 git add -A -- ':!SDK/tools/linux' ':!output' ':!SDK/output'
 git diff --cached -- ':!*.a' ':!*.bin' ':!SDK/tools/linux/**' ':!*.cbp' ':!**/*.bat' \
   ':!**/json.txt' ':!SDK/build/fileList.dumy' ':!output/**' ':!SDK/output/**' \
+  ':!SDK/apps/common/ui/lvgl_v8/badge_media_*' ':!SDK/apps/common/ui/lvgl_v8/badge_opp.*' \
   > ../../../../patches/badge/badge-menu.patch
 git reset
 ```

@@ -1,0 +1,81 @@
+# Display media on the E87 badge
+
+The media firmware displays a photo, a short looping clip, or a message on the E87's round screen. It remembers the selected item and the brightness. The screen stays on while charging. On the tested E87, Button 1 opens the menu and Button 2 puts the screen to sleep. Either button wakes it.
+
+## Send a photo
+
+1. Build and install the [custom E87 firmware](build-badge-firmware.md). The first boot shows a sample image.
+2. Open the menu and choose **Receive**. The badge shows its Bluetooth name.
+3. On Android, open a JPEG in Photos or Files and choose **Share → Bluetooth**. In Ubuntu's Bluetooth settings, select the badge and choose **Send Files**.
+4. If prompted, compare the pairing code on both screens and confirm it on each device. On the tested Ubuntu setup, the pairing prompt closed after about ten seconds. If that happens, reopen **Receive**, start the send again and confirm directly on both devices.
+5. The badge displays the new item after the transfer completes.
+
+Swipe left or right on the media screen to cycle through saved items. Open **Gallery** to select or delete a file. **Settings** controls brightness. **Tools** contains the additional Bluetooth utilities.
+
+| Media | File to send |
+|---|---|
+| Photo | Baseline JPEG (`.jpg` or `.jpeg`), up to 16 MiB and 64 MiPixels. The badge applies EXIF orientation, crops the center square, and stores a 144 × 144 image. |
+| Message | A UTF-8 `.txt` file up to 512 bytes. The display font includes French accents. Scroll long messages vertically. |
+| Clip | A silent 360 × 360 AVI with MJPEG video at up to 12 frames per second and a file size of at most 90,000 bytes. |
+
+Receive one file at a time. The gallery has four slots. The largest can hold a clip, a photo, or a message. Free that slot to receive another clip. Cancelled transfers keep previously saved items in the gallery.
+
+An upgraded badge may show **Prepare gallery?** on the Receive screen. Choose **Erase and prepare** to erase old data in the reserved 220 KiB gallery area and start receiving. This preserves saved gallery items. Choose **Back** to keep the old data. If power is interrupted during preparation, use **Gallery → Prepare storage** to resume.
+
+## Read diagnostics
+
+Open **Settings → Update** on the badge. In Ubuntu's `bluetoothctl`, find the badge with `scan le`, then run the following commands using the address of your badge.
+
+```text
+scan off
+connect <badge-address>
+menu gatt
+select-attribute c2e6fd11-e966-1000-8000-bef9c223df6a
+read
+```
+
+The value is ASCII. It reports the diagnostic format version, saved item count, blank sector counts for the four slots, and flash read errors. The most recent receive result includes the stage, the byte count, and the OBEX response in hexadecimal. `last_receive` is `0` before a result, `1` for a saved item, or a negative [storage](../firmware/badge-media/badge_media_store.h) or [Bluetooth](../firmware/badge-media/badge_opp.h) error code.
+
+`jpeg_stage` and `jpeg_detail` report the last JPEG decoding stage and the decoder result. `jpeg_soi` indicates whether the first two bytes matched the JPEG start marker. It is `-1` before a result, `0` for a mismatch and `1` for a match.
+
+If the regular GATT client disconnects before reading, use the direct ATT client from the Ubuntu BlueZ package with the badge still in **Update**.
+
+```sh
+gatttool --device="$BADGE_ADDRESS" --addr-type=public --char-read --handle=0x003c
+```
+
+Set `BADGE_ADDRESS` to the address of your badge. The command prints the response as hexadecimal bytes. Exit **Update** to return to the media screen.
+
+For boot and controller logs, connect the board's PA4 debug TX to RX on a 3.3 V USB–UART adapter and connect the grounds. Leave the adapter's TX and power pins disconnected. Use the adapter's device path with `picocom -b 115200 /dev/ttyUSB0`. The firmware exposes UART transmit output only.
+
+## Prepare a clip
+
+On a computer with Python and Pillow, run this from the repository root with an animated `loop.gif`. Then send `loop.avi` from Bluetooth settings.
+
+```sh
+PYTHONPATH=tools/qix-ble python3 - <<'PY'
+from pathlib import Path
+from qix_ble.image import prepare_video
+
+clip = prepare_video("loop.gif", fps=12, duration=1, jpeg_quality=60)
+if len(clip) > 90_000:
+    raise SystemExit("Clip exceeds 90,000 bytes. Shorten the duration or lower JPEG quality.")
+Path("loop.avi").write_bytes(clip)
+PY
+```
+
+## Verify on an E87
+
+1. Send a full-size portrait JPEG from Android, then an accented text file and a clip from Ubuntu. Check the portrait orientation, the loop, and the last selected media after reboot. Repeat with a previously paired sender.
+2. Cancel an upload on the badge and interrupt another from the sender. Check that the last media is still available. Fill the gallery, delete an item, and retry.
+3. Count transfers to the LCD after a static image first appears. Measure mean battery current against the previous build with the same image and PWM setting, then compare 50% and 100% brightness on the media firmware. Record wake latency, delivered video frame rate, and remote send time.
+4. Check that charging leaves the media visible and that a firmware update preserves the gallery.
+
+With the patched SDK, a host C compiler, Python, and Pillow, run the simulated tests from the repository root.
+
+```sh
+BADGE_OPP_SDK=tools/community-re/jieli-sdks/e_badge_707_sdk_200 \
+  python3 -m unittest discover -s firmware/badge-media/tests
+```
+
+These tests exercise decoding, the receive state machine, and simulated flash. The transfers, installed update, and current draw require a physical E87.

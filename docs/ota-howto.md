@@ -42,7 +42,7 @@ advertised **name** changes `OEM → custom firmware`.
   connection state itself. Install the client: `pip install -e tools/qix-ble`.
 - **Third-party crypto (`jltech`):** vendored as pure Python in `tools/ufw-repack/jltech/` —
   nothing to obtain, no `crcmod`. Only `scripts/gen_chipkey_keyfile.py` still needs the external
-  `jl-misctools` mirror. See [README](../README.md#dependencies).
+  `jl-misctools` mirror.
 - **Chipkey:** these images embed the device flashing key `0x9847` (E87, PID 1558). A different
   PID needs a different chipkey/`isd_config.ini` — do **not** reuse `0x9847`.
 - **Power:** badge battery **≥ 30 %**, or USB connected for the **whole** flash window. A
@@ -62,55 +62,21 @@ advertised **name** changes `OEM → custom firmware`.
   (`dump2ufw.py` + its vendored `jltech/` + the shipped `loaderdl-base.ufw`) is already in
   this repo; the wired *dump* additionally needs the `tools/jl-uboot-tool` submodule.
 
-### The firmware image in [`firmware/`](../firmware)
+### Select the E87 media image
 
-| File | Size | Role |
-|---|---|---|
-| `firmware/custom-fw-ac707n.ufw` | 1 079 363 B | **The custom firmware** — the custom firmware badge-menu build (LVGL UI, `BADGE-FWMARK 016`). Serves the **Qix FD00** OTA server on its Update screen. Qix-wrapped **fw-custom** (OEM uboot + app). The **destination** of every leg; **validated end-to-end over custom→custom**. |
-
-It carries the 27-byte Qix wrapper (magic `bcaf`). The custom is packaged **fw-custom**
-(`tools/ufw-repack/swap_app.py`: your `app.bin` spliced into an OEM `.ufw`, which preserves the OEM
-uboot byte-identically — the resident OEM uboot is what performs the CODE rewrite on apply). Do
-**not** flash a raw SDK `make` image (native uboot) as the OTA payload / recovery — the native uboot
-cannot do the OTA CODE-write and the badge bricks silently at apply.
-
-### Rebuilding the image from a fresh `app.bin`
-
-`firmware/custom-fw-ac707n.ufw` is the packaged OTA image; the SDK build only emits a raw
-`app.bin` (its own `update.ufw` carries the native uboot and is **not** OTA-flashable). To roll a
-new build into the OTA image, splice your freshly-built `app.bin` into **an existing copy of
-`firmware/custom-fw-ac707n.ufw`** (reused as the base — it already carries the OEM uboot, flash
-geometry, and the `bcaf` Qix wrapper). `swap_app.py` does a code-only replace and recomputes every
-CRC (JLFS `app.bin`, `app_area_head`, `flash.bin`, the list/header, and the Qix wrapper), so the
-output is flash-ready — no separate `wrap_qix.py` step:
-
-The crypto/CRC helpers `swap_app.py` needs are **vendored** in `tools/ufw-repack/jltech/` (pure
-Python — no `jl-misctools` checkout and no `crcmod`), so it runs from this repo with nothing extra
-on the `PYTHONPATH`. Just point `APP` at your freshly-built `app.bin` (after a submodule build it is
-at `tools/community-re/jieli-sdks/e_badge_707_sdk_200/SDK/cpu/br35/tools/app.bin`), then run from
-the repo root:
+Build the [E87 media firmware](build-badge-firmware.md) with `--board e87 --ota`.
+Set `IMAGE` in your shell to the path printed on its “OTA image” line. The commands
+below use that variable for both the first installation and later updates.
 
 ```sh
-APP=/path/to/SDK/cpu/br35/tools/app.bin
-
-python3 tools/ufw-repack/swap_app.py \
-  firmware/custom-fw-ac707n.ufw \
-  "$APP" \
-  firmware/custom-fw-ac707n.ufw
+read -r -p "Path to the newly built E87 .ufw: " IMAGE
 ```
 
-`swap_app.py <base.ufw> <app.bin> <out.ufw>`: it reads `firmware/custom-fw-ac707n.ufw` as the
-OEM-geometry **base**, splices in your **`$APP`**, and writes the packaged image back to
-`firmware/custom-fw-ac707n.ufw` (**the deliverable**). The base is read fully before the output is
-written, so reusing the same path (in-place update) is safe — pass a different third argument if you
-want to keep the previous image. (No inline `#` comments inside the command: an inline comment after
-a `\` breaks the line continuation and the shell then tries to run the `.bin`/`.ufw` as a command.)
+Use the packaged image from `firmware-builds/`. The tracked
+`firmware/custom-fw-ac707n.ufw` supplies the bootloader and flash layout for
+packaging. Installing that older build gives you the legacy menu. The SDK's
+raw `update.ufw` uses a different bootloader and can leave the E87 unable to boot.
 
-`swap_app.py` prints the OEM app slot size (~995 KB) and 0xFF-pads the tail; your `app.bin` must
-fit it. The output size stays `1 079 363 B`. Two builds of the same source differ only in the
-embedded `__TIME__`/`__LINE__` bytes plus the CRCs that cover them — a byte-different `.ufw` with
-the same size is expected (don't compare by `sha256`). Then flash it per the
-[OEM → custom](#2-oem--custom) / [custom → custom](#3-custom--custom) recipes.
 
 ---
 
@@ -129,7 +95,7 @@ qix scan | grep -i <MAC>              # confirm it advertises; caches it for the
 # 2. Flash. Go STRAIGHT to the real flash — a --probe-only that returns accepted leaves the badge
 #    in update-mode (it won't re-advertise cleanly), so don't probe-then-flash. Takes minutes.
 QIX_CONNECT_VIA_DBUS=1 QIX_FLASH_PAIR=1 QIX_CONNECT_ATTEMPTS=1 QIX_CONNECT_TIMEOUT=60 \
-  qix flash <MAC> firmware/custom-fw-ac707n.ufw --oem --req-timeout 20
+  qix flash <MAC> "$IMAGE" --oem --req-timeout 20
 ```
 
 If the connect still fails or hangs, **power-cycle the badge** (single-slot; it wedges after a
@@ -146,7 +112,7 @@ failed or half-open connect) and retry from step 1.
 
 ## 3. custom → custom
 
-The badge already runs the EC-BADGE custom. Put it on **Ajustes → Actualizar** (advertising
+The badge already runs the EC-BADGE custom. Put it on **Settings → Update** (**Ajustes → Actualizar** on older builds) (advertising
 `EC-BADGE`, serving the Qix FD00 OTA), then:
 
 ```sh
@@ -163,7 +129,7 @@ bluetoothctl --timeout 15 scan le | grep -i <MAC>
 # 3. Flash (deterministic DBus connect + fresh HID pair). The ~1 MB transfer takes SEVERAL
 #    MINUTES — do NOT interrupt it or wrap it in a short timeout.
 QIX_CONNECT_VIA_DBUS=1 QIX_FLASH_PAIR=1 QIX_CONNECT_ATTEMPTS=4 QIX_CONNECT_TIMEOUT=40 \
-  qix flash <MAC> firmware/custom-fw-ac707n.ufw --oem --req-timeout 20
+  qix flash <MAC> "$IMAGE" --oem --req-timeout 20
 ```
 
 This is the exact path validated end-to-end this session. Resume after a link drop works without
@@ -206,7 +172,7 @@ on the badge (e.g. a lock background) survives. The loader bundle ships prebuilt
 `tools/ufw-repack/loaderdl-base.ufw` — you only supply the dump.
 
 Then flash — the preflight is the same as the [custom → custom](#3-custom--custom) leg
-(adapter up, `bluetoothctl remove <MAC>`, re-scan; badge on **Ajustes → Actualizar**,
+(adapter up, `bluetoothctl remove <MAC>`, re-scan; badge on **Settings → Update** (**Ajustes → Actualizar** on older builds),
 advertising `EC-BADGE`) but with `rcsp-flash`:
 
 ```sh
@@ -263,7 +229,7 @@ Env vars (see [`tools/qix-ble/README.md`](../tools/qix-ble/README.md)):
 | `connect failed … Device1 not found` | device not cached / not advertising | ensure badge on the Update screen, then re-scan |
 | `flash OK` + `apply VERIFY OK` + `cpu_reset`, then **silent brick** | receiver carried the SDK-native uboot (bad USB-ISP image) | recover by USB-ISP'ing the fw-custom `.ufw` code-slice (OEM uboot) — **not** a battery issue |
 | `UfwInvalid` from `qix flash` | `.ufw` lacks the 27-byte Qix wrapper | `wrap_qix.py wrap` it |
-| `rcsp-flash` rejects / no OTA service | badge is not serving the native RCSP Update path | badge must be running the **custom** on **Ajustes → Actualizar** (advertising `EC-BADGE`); `rcsp-flash` needs the vanilla `.ufw` from `dump2ufw.py`, not a Qix-wrapped one |
+| `rcsp-flash` rejects / no OTA service | badge is not serving the native RCSP Update path | badge must be running the **custom** on **Settings → Update** (**Ajustes → Actualizar** on older builds) (advertising `EC-BADGE`); `rcsp-flash` needs the vanilla `.ufw` from `dump2ufw.py`, not a Qix-wrapped one |
 | `dump2ufw.py` errors `dump too small` | dump is shorter than the CODE slot (`0xFC000`) | re-dump the full 4 MB: `jluboottool.py "read 0x0 0x400000 <dump.bin>"` |
 | Custom needs its own `ui_res`/`virfat` resources | the `0xC0` path is code-only | (legacy) use the STAGER `provision`/`deploy-fw --resources` path |
 
