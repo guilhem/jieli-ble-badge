@@ -26,6 +26,8 @@ The photo appears as soon as the transfer finishes. Swipe left or right to chang
 
 **Gallery** holds four items. Only the largest slot can hold a clip. **Settings** remembers your brightness. Button 2 puts the display to sleep, and either button wakes it. Open **Settings → Update** for firmware updates and [Bluetooth diagnostics](docs/badge-media.md#read-diagnostics).
 
+If a photo shows “Unsupported or damaged file”, export it as a standard baseline JPEG with 4:2:0 color sampling and share the new file. The [media guide](docs/badge-media.md#send-a-photo) lists the supported JPEG encodings.
+
 ## Install on an E87
 
 Check your hardware first. This build targets the **E87 / DragonJAR badge**, with a JieLi AC707N, board marking `qx7613_v1.3`, USB PID 1558 and two buttons. The DG01 wristband uses a separate image.

@@ -20,6 +20,8 @@ Swipe left or right on the media screen to cycle through saved items. Open **Gal
 
 Receive one file at a time. The gallery has four slots. The largest can hold a clip, a photo, or a message. Free that slot to receive another clip. Cancelled transfers keep previously saved items in the gallery.
 
+Grayscale baseline JPEGs are supported. For color photos, use a baseline YCbCr JPEG with a single interleaved scan and 4:4:4, horizontal 4:2:2 or 4:2:0 sampling. Progressive JPEGs, CMYK files and vertical 4:2:2 sampling are unsupported. If a phone photo is rejected, export a baseline copy using 4:2:0 and share the resulting file. The [example landscape](media/landscape.jpg?raw=true) is a compatible JPEG.
+
 An upgraded badge may show **Prepare gallery?** on the Receive screen. Choose **Erase and prepare** to erase old data in the reserved 220 KiB gallery area and start receiving. This preserves saved gallery items. Choose **Back** to keep the old data. If power is interrupted during preparation, use **Gallery → Prepare storage** to resume.
 
 ## Read diagnostics
