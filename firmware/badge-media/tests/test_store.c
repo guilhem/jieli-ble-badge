@@ -1,4 +1,5 @@
 #include "badge_media_store.h"
+#include "badge_svg.h"
 #include "system/includes.h"
 
 #include <assert.h>
@@ -190,6 +191,47 @@ static void test_prepare(const char *photo)
     assert(badge_media_get(0) && badge_media_get(0)->kind == BADGE_MEDIA_PHOTO);
 }
 
+static void test_svg_import(void)
+{
+    static const char svg[] = "<svg viewBox=\"0 0 360 360\">"
+                             "<text x=\"180\" y=\"180\" fill=\"#FFFFFF\">Guilhem &amp; Caf\xc3\xa9"
+                             "<animate attributeName=\"x\" from=\"180\" to=\"200\" dur=\"1s\"/>"
+                             "</text></svg>";
+    static const char unsupported[] = "<svg viewBox=\"0 0 360 360\"><image/></svg>";
+    const size_t size = sizeof(svg) - 1;
+    uint8_t previous[11 * 4096];
+
+    memset(flash, 255, sizeof(flash));
+    badge_media_store_init();
+    send_text();
+    assert(badge_media_import_finish() == 0);
+    memcpy(previous, flash, sizeof(previous));
+
+    assert(badge_media_import_begin("oversize.svg", BADGE_SVG_MAX + 1) == BADGE_MEDIA_ERR_SIZE);
+    assert(!badge_media_import_begin("short.svg", size));
+    assert(!badge_media_import_write(svg, size - 1));
+    assert(badge_media_import_finish() == BADGE_MEDIA_ERR_FORMAT);
+    assert(!badge_media_import_begin("cancelled.svg", 0));
+    assert(!badge_media_import_write(svg, size));
+    badge_media_import_abort();
+    assert(!badge_media_import_begin("image.svg", 0));
+    assert(!badge_media_import_write(unsupported, sizeof(unsupported) - 1));
+    assert(badge_media_import_finish() == BADGE_MEDIA_ERR_FORMAT);
+    badge_media_store_init();
+    assert(badge_media_get(0)->kind == BADGE_MEDIA_TEXT && !badge_media_get(1));
+    assert(!memcmp(previous, flash, sizeof(previous)));
+
+    assert(!badge_media_import_begin("badge.SVG", 0));
+    assert(!badge_media_import_write(svg, 7));
+    assert(!badge_media_import_write(svg + 7, size - 7));
+    assert(badge_media_import_finish() == 1);
+    badge_media_store_init();
+    assert(badge_media_get(1)->kind == BADGE_MEDIA_SVG && badge_media_get(1)->size == size);
+    char stored[sizeof(svg)];
+    assert(badge_media_read_slot((void *)(uintptr_t)1, 0, stored, size) == size);
+    assert(!memcmp(stored, svg, size));
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 3);
@@ -280,5 +322,6 @@ int main(int argc, char **argv)
     assert(badge_media_import_finish() == 1);
     assert(badge_media_store_check_space() == BADGE_MEDIA_ERR_FULL);
     assert(badge_media_import_begin("full.txt", 0) == BADGE_MEDIA_ERR_FULL);
+    test_svg_import();
     return 0;
 }

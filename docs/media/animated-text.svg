@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 360" width="360" height="360">
+  <text x="180" y="151" text-anchor="middle" fill="#4786A7" font-family="DejaVu Serif" font-size="32">Zoé</text>
+  <text x="350" y="211" fill="#A5633A" font-family="DejaVu Sans" font-size="32">Bonjour ! · Équipe d’accueil<animate
+      attributeName="x" values="350;34;-420" dur="8s" repeatCount="indefinite"/><animate
+      attributeName="fill-opacity" values="0;1;1;0" dur="8s" repeatCount="indefinite"/></text>
+</svg>

@@ -1,4 +1,5 @@
 #include "badge_media_store.h"
+#include "badge_svg.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -110,6 +111,8 @@ static int valid_size(enum badge_media_kind kind, uint32_t size)
         return size == BADGE_MEDIA_PIXELS * sizeof(uint16_t);
     case BADGE_MEDIA_TEXT:
         return size && size <= BADGE_TEXT_MAX;
+    case BADGE_MEDIA_SVG:
+        return size && size <= BADGE_SVG_MAX;
     case BADGE_MEDIA_CLIP:
         return size && size <= BADGE_MEDIA_MAX_CLIP;
     default:
