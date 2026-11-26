@@ -413,11 +413,11 @@ index 240fc6a..71e9a34 100644
 +
 +#ifdef CONFIG_BADGE_MENU
 +    {
-+        extern volatile u8 g_badge_adkey_kv;
-+        g_badge_adkey_kv = kv;
++        extern void badge_adkey_publish(u8 key);
++        badge_adkey_publish(kv);
 +    }
 +#endif
-+    return NO_KEY;      /* the UI polls g_badge_adkey_kv; the driver takes no action */
++    return NO_KEY;      /* the UI owns key actions */
 +}
 +#else
 +
@@ -512,8 +512,8 @@ index 240fc6a..71e9a34 100644
 +    /* Menu build: LVGL's keypad indev owns the buttons. Publish the raw key value so
 +     * keypad_read() can poll it (same as the touch); take no action in the driver. */
 +    {
-+        extern volatile u8 g_badge_adkey_kv;
-+        g_badge_adkey_kv = kv;
++        extern void badge_adkey_publish(u8 key);
++        badge_adkey_publish(kv);
 +#ifdef CONFIG_BADGE_BOARD_E87
 +        static u8 previous = NO_KEY;
 +        extern void badge_media_key_pressed(u8 key);
@@ -5524,7 +5524,7 @@ index 8cbf236..4035bde 100644
  
      int msg_p[2 + sizeof(struct key_event) / 4];
  
-@@ -977,8 +991,1618 @@ u8 lvgl_ui_is_suspended(void)
+@@ -977,8 +991,1617 @@ u8 lvgl_ui_is_suspended(void)
      return lvgl_suspend_flag;
  }
  
@@ -5538,6 +5538,8 @@ index 8cbf236..4035bde 100644
 +
 +/* ---- Badge tool menu (LVGL, touch via AXS5106L) ----------- */
 +static lv_obj_t *g_menu_scr;
++extern u8 badge_adkey_read(void);
++extern void badge_adkey_consume(void);
 +/* ---- Lock / screensaver state --------------------------------------
 + * The badge boots SUSPENDED: display + touch off, only the hardware key is watched.
 + * A key wakes it to a full-screen lock image; a swipe there opens the menu; the
@@ -5971,18 +5973,15 @@ index 8cbf236..4035bde 100644
 + * charge session is still active (the caller keeps looping). */
 +static void badge_charge_tick(void)
 +{
-+    extern volatile u8 g_badge_adkey_kv;
 +    extern u8 get_charge_online_flag(void);
 +    extern int lcd_drv_backlight_ctrl(u8 percent);
 +    if (!get_charge_online_flag()) {   /* unplug raced the loop's edge detect */
 +        badge_charge_screen_exit();
 +        return;
 +    }
-+    /* Either button peeks the live percentage; release is awaited so a hold can't
-+     * strobe the backlight on every tick. */
-+    if (g_badge_adkey_kv != NO_KEY) {
-+        g_badge_adkey_kv = NO_KEY;
-+        while (g_badge_adkey_kv != NO_KEY) { os_time_dly(2); }
++    /* Peek once per press so a held key does not keep the backlight on. */
++    if (badge_adkey_read() != NO_KEY) {
++        badge_adkey_consume();
 +        badge_charge_render();
 +        lcd_drv_backlight_ctrl(g_bright_pct[g_bright_idx]);
 +        g_charge_bkl_on = 1;
@@ -7143,7 +7142,7 @@ index 8cbf236..4035bde 100644
  #if LV_USE_MONKEY != 0
      /*Create pointer monkey test*/
      lv_monkey_config_t monkey_pointer_config;
-@@ -1025,7 +2649,9 @@ static void lvgl_main_task(void *priv)
+@@ -1025,7 +2648,9 @@ static void lvgl_main_task(void *priv)
      lv_port_fs_init();
      lv_port_disp_init(priv);
      lv_port_indev_init();
@@ -7154,7 +7153,7 @@ index 8cbf236..4035bde 100644
      lv_ui_src_pack_mode_init();
  
  #if LV_USE_GPU_COMPRESS
-@@ -1054,6 +2680,297 @@ static void lvgl_main_task(void *priv)
+@@ -1054,6 +2679,291 @@ static void lvgl_main_task(void *priv)
  
      ui_sysinfo_init();
  
@@ -7178,10 +7177,6 @@ index 8cbf236..4035bde 100644
 +    {
 +        u8 upd_shown = 0xff;
 +        while (1) {
-+            /* g_badge_adkey_kv is kept fresh by the key-scan system timer regardless of
-+             * display/touch state. Buttons: Button 1 = KEY_AD_NUM0 = "back",
-+             * Button 2 = KEY_AD_NUM1 = "other". */
-+            extern volatile u8 g_badge_adkey_kv;
 +            /* USB/charge session: edge-detect the charge line (LDOin 5V present). On plug the
 +             * badge parks the whole UI on the black charge screen with the radio OFF; on unplug
 +             * it returns to the normal menu.
@@ -7239,9 +7234,8 @@ index 8cbf236..4035bde 100644
 +                os_time_dly(1);
 +            }
 +            if (g_warn_active) {        /* low-battery warning: any key or ~3 s timeout dismisses */
-+                if (g_badge_adkey_kv != NO_KEY) {
-+                    g_badge_adkey_kv = NO_KEY;
-+                    while (g_badge_adkey_kv != NO_KEY) { os_time_dly(2); }
++                if (badge_adkey_read() != NO_KEY) {
++                    badge_adkey_consume();
 +                    badge_warn_dismiss();
 +                } else if ((u32)(timer_get_ms() - g_warn_show_ms) > BADGE_WARN_TIMEOUT_MS) {
 +                    badge_warn_dismiss();
@@ -7253,15 +7247,15 @@ index 8cbf236..4035bde 100644
 +            /* Lock / screensaver control + hardware buttons. */
 +            if (g_badge_locked) {
 +                /* On E87 only a fresh physical press wakes the powered-down display. */
-+                u8 key = g_badge_adkey_kv;
++                u8 key = badge_adkey_read();
 +#ifdef CONFIG_BADGE_MEDIA_UI
 +                if (media_input_ready) {
 +                    while ((key = badge_media_take_key()) == NO_KEY) os_sem_pend(&media_input, 0);
 +                }
 +#endif
 +                if (key != NO_KEY) {
++                    badge_adkey_consume();
 +                    badge_lock_wake();
-+                    while (g_badge_adkey_kv != NO_KEY) { os_time_dly(2); }  /* wait for release */
 +                }
 +                os_time_dly(3);   /* ~30 ms poll; CPU mostly idle while locked */
 +                continue;
@@ -7301,7 +7295,7 @@ index 8cbf236..4035bde 100644
 +#else
 +            {
 +                static u8 s_lock_prev_kv = NO_KEY;
-+                u8 kv = g_badge_adkey_kv;
++                u8 kv = badge_adkey_read();
 +#ifdef CONFIG_BADGE_MEDIA_UI
 +                if (media_pending_key != NO_KEY) kv = badge_media_take_key();
 +#endif
@@ -7309,28 +7303,27 @@ index 8cbf236..4035bde 100644
 +                s_lock_prev_kv = kv;
 +                if (edge != NO_KEY) {
 +                    lv_obj_t *act = lv_scr_act();
-+                    u8 acted = 0;
-+                    if (act == g_lock_scr) {
-+                        if (edge == KEY_AD_NUM0)      { badge_lock_enter(); acted = 1; }            /* back  -> suspend */
-+                        else if (edge == KEY_AD_NUM1) {
++                    if (act == g_lock_scr && (edge == KEY_AD_NUM0 || edge == KEY_AD_NUM1)) {
++                        badge_adkey_consume();
++                        s_lock_prev_kv = NO_KEY;
++                        if (edge == KEY_AD_NUM0) {
++                            badge_lock_enter();
++                        } else {
 +#ifdef CONFIG_BADGE_MEDIA_UI
 +                            badge_media_ui_menu();
 +#else
 +                            lv_scr_load(g_menu_scr);
 +                            kp_set_menu();
 +#endif
-+                            acted = 1;
 +                        }
 +                    }
 +#ifndef CONFIG_BADGE_MEDIA_UI
-+                    else if (act == g_menu_scr) {
-+                        if (edge == KEY_AD_NUM0) { badge_lock_show(); acted = 1; }
++                    else if (act == g_menu_scr && edge == KEY_AD_NUM0) {
++                        badge_adkey_consume();
++                        s_lock_prev_kv = NO_KEY;
++                        badge_lock_show();
 +                    }
 +#endif
-+                    if (acted) {
-+                        while (g_badge_adkey_kv != NO_KEY) { os_time_dly(2); }  /* wait for release */
-+                        s_lock_prev_kv = NO_KEY;
-+                    }
 +                }
 +            }
 +#endif
@@ -7437,7 +7430,7 @@ index 8cbf236..4035bde 100644
 +            extern u8 badge_touch_set_idle(u8 idle);
 +            unsigned int ticks = badge_media_ui_tick();
 +            media_idle_wait = media_input_ready && ticks > 1;
-+            if (badge_touch_set_idle(media_idle_wait) || g_badge_adkey_kv != NO_KEY) ticks = 1;
++            if (badge_touch_set_idle(media_idle_wait) || badge_adkey_read() != NO_KEY) ticks = 1;
 +            lv_timer_handler();
 +            if (media_idle_wait && ticks > 1) os_sem_pend(&media_input, ticks);
 +            else os_time_dly(1);
@@ -7504,13 +7497,32 @@ index ee2e4d7..5a64680 100644
  
      /*Later you should create group(s) with `lv_group_t * group = lv_group_create()`,
       *add objects to the group with `lv_group_add_obj(group, obj)`
-@@ -482,8 +499,106 @@ static int ui_scr_key_event_handler(struct key_event *key)
+@@ -482,8 +499,128 @@ static int ui_scr_key_event_handler(struct key_event *key)
  }
  
  /*Will be called by the library to read the mouse*/
 +#ifdef CONFIG_BADGE_MENU
 +/* Current ADKEY value, published by the ADKEY driver (adkey.c) and polled here. */
-+volatile u8 g_badge_adkey_kv = NO_KEY;
++static volatile u8 g_badge_adkey_kv = NO_KEY;
++static volatile u8 badge_adkey_consumed;
++
++void badge_adkey_publish(u8 key)
++{
++    g_badge_adkey_kv = key;
++    if (key == NO_KEY) badge_adkey_consumed = 0;
++}
++
++u8 badge_adkey_read(void)
++{
++    return badge_adkey_consumed ? NO_KEY : g_badge_adkey_kv;
++}
++
++void badge_adkey_consume(void)
++{
++    /* The next screen must not receive the press that opened it. */
++    badge_adkey_consumed = g_badge_adkey_kv != NO_KEY;
++}
++
 +/* One-button press tiers. Kept in sync with the same two constants in lvgl_main.c, which
 + * owns the third tier: < LONG = next, LONG..LOCK = select, >= LOCK = lock (main loop). */
 +#define BADGE_BTN_LONG_MS 600
@@ -7527,7 +7539,7 @@ index ee2e4d7..5a64680 100644
 +     * ADKEY driver publishes and maps the two hardware buttons to LVGL navigation keys.
 +     * Static last key so LVGL sees a clean PRESS->RELEASE transition. */
 +    static uint32_t s_last = LV_KEY_ENTER;
-+    u8 kv = g_badge_adkey_kv;
++    u8 kv = badge_adkey_read();
 +    uint32_t lvkey = 0;
 +#ifdef CONFIG_BADGE_BOARD_DG01
 +    /* The DG01 has ONE physical button (adkey_config.c collapses its whole AD window to
@@ -7545,7 +7557,10 @@ index ee2e4d7..5a64680 100644
 +        static uint32_t s_down_ms = 0;
 +        static u8 s_down = 0;
 +        static uint32_t s_emit = 0;
-+        if (kv != NO_KEY && !s_down) {
++        if (badge_adkey_consumed) {
++            s_down = 0;
++            s_emit = 0;
++        } else if (kv != NO_KEY && !s_down) {
 +            s_down = 1;
 +            s_down_ms = timer_get_ms();
 +        } else if (kv == NO_KEY && s_down) {
