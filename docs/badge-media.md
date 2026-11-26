@@ -2,9 +2,15 @@
 
 The media firmware displays photos, short looping clips, messages, and animated SVG text on the E87's round screen. It remembers the selected item and the brightness. The screen stays on while charging. On the tested E87, Button 1 opens the menu and Button 2 puts the screen to sleep. Either button wakes it.
 
+After two seconds without input on a still home screen, the interface checks
+for work every 200 ms. The touch controller is sampled every 50 ms and a
+detected press wakes the interface early. During a clip, an animation or a
+transfer the interface runs at its active cadence. With the screen locked,
+the analog button driver signals a confirmed press to wake the interface.
+
 ## Send a photo
 
-1. Build and install the [custom E87 firmware](build-badge-firmware.md). The first boot shows a sample image.
+1. Build and install the [custom E87 firmware](build-badge-firmware.md). When the gallery is empty, the home screen reads “Press Button 1 then choose Receive”.
 2. Open the menu and choose **Receive**. The badge shows its Bluetooth name.
 3. On Android, open a JPEG in Photos or Files and choose **Share → Bluetooth**. In Ubuntu's Bluetooth settings, select the badge and choose **Send Files**.
 4. If prompted, compare the pairing code on both screens and confirm it on each device. On the tested Ubuntu setup, the pairing prompt closed after about ten seconds. If that happens, reopen **Receive**, start the send again and confirm directly on both devices.
@@ -91,7 +97,7 @@ PY
 1. Send a full-size portrait JPEG from Android, then an accented text file and a clip from Ubuntu. Check the portrait orientation, the loop, and the last selected media after reboot. Repeat with a previously paired sender.
 2. Send the same example SVG from Ubuntu and Android. Check both 32 px fonts and the scrolling fade, then put the display to sleep and verify that LCD transfers stop. Wake and reboot the badge and check that the saved SVG opens.
 3. Cancel an upload on the badge and interrupt another from the sender. Check that the last media is still available. Fill the gallery, delete an item, and retry.
-4. Count transfers to the LCD after a static image first appears. Measure mean battery current against the previous build with the same image and PWM setting, then compare 50% and 100% brightness on the media firmware. Record wake latency, delivered video frame rate, and remote send time.
+4. On battery power, measure average current with the same still photo at 30% and 50% brightness. Compare each setting with the previous firmware over the same interval after inactivity has settled. Repeat with the display locked, then wake it with each button. Record first-gesture latency, missed presses, video frame rate and file transfer time.
 5. Check that charging leaves the media visible and that a firmware update preserves the gallery.
 
 With the patched SDK, a host C compiler, Python, and Pillow, run the simulated tests from the repository root.

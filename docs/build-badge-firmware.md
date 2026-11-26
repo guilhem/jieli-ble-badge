@@ -71,12 +71,13 @@ badge patch is applied *into* the submodule worktree by design — the submodule
 permanently "modified" while you are building, and that is expected.
 
 After pulling a change to `badge-menu.patch`, reverse the patch from the revision
-previously built before rerunning setup. For an SDK built from the E87 media
-merge at `4ef6e3c`, run this from the repository root.
+previously built before rerunning setup. For an SDK built from the animated SVG
+revision at `258a3e9`, run this from the repository root. Replace that revision
+with the one you built if it differs.
 
 ```sh
 SDK=tools/community-re/jieli-sdks/e_badge_707_sdk_200
-git show 4ef6e3c:patches/badge/badge-menu.patch | git -C "$SDK" apply --reverse &&
+git show 258a3e9:patches/badge/badge-menu.patch | git -C "$SDK" apply --reverse &&
   scripts/setup-badge-build.sh --skip-postbuild &&
   scripts/build-badge-fw.sh --board e87 --clean --ota
 ```
@@ -143,8 +144,10 @@ drivers. The [media gallery and Bluetooth Object Push receiver](badge-media.md) 
 for `e87`. The build script copies their sources from `firmware/badge-media/` into the SDK
 before compilation.
 
-Switching boards or using `--no-menu` triggers a full rebuild when the configuration
-changes. This prevents objects from the previous configuration from entering the link.
+Switching boards or using `--no-menu` triggers a full rebuild because the SDK's
+object rules do not track compiler defines. On Linux, the linker uses the declared
+source order. Adding, removing or reordering a source updates the link even when
+old objects remain in the build directory.
 
 ### The equivalent by hand
 
@@ -168,7 +171,7 @@ patch).
 
 | File | Size (this build) | What it is |
 |---|---|---|
-| `SDK/cpu/br35/tools/app.bin` | ~973 KB | The raw application image. **This is the only input the BLE OTA path needs.** |
+| `SDK/cpu/br35/tools/app.bin` | 944,320 B for the E87 media build | The raw application image used by the E87 BLE OTA repacker. |
 | `SDK/output/update.ufw` | ~2.27 MB | Native update image — **USB flashing only**. Carries the *native* uboot, so it is **not** OTA-flashable. |
 | `SDK/output/jl_isd.fw` / `jl_isd.bin` | ~1.24 MB / ~1.03 MB | Full flash image for USB-ISP |
 | `firmware-builds/custom-fw-ac707n-<utc>.ufw` | 1 079 363 B | With `--ota`: the **BLE-flashable** image |
@@ -182,6 +185,74 @@ existing image that already carries the OEM bootloader, flash geometry and Qix
 wrapper. The build script does this with `--ota` and prints the packaged image
 path. Use the file under `firmware-builds/` for installation. Full
 protocol details in [ota-howto.md](ota-howto.md).
+
+### E87 media footprint
+
+With SDK `d0167685` and the pinned pi32v2 toolchain, the application went from
+991,232 bytes at `258a3e9` to 944,320 bytes. This leaves **51,296 bytes** in
+the 995,616-byte OEM application slot. The OTA file still occupies 1,079,363
+bytes because the repacker pads the slot. These are host builds.
+
+The first optimization pass produced a 963,584-byte image. Each comparison
+below restores one component setting in that build. Shared code and linker
+alignment affect the measured differences.
+In the patched SDK, the E87 switches for health and FlashDB are in
+`SDK/apps/watch/board/br35/board_ac707n_demo/board_ac707n_demo_cfg.h`. The ANCS
+and audio player switches are in `SDK/apps/watch/include/app_config.h`. Use the
+manual build above with `BOARD=e87 MENU=1` and compare `app.bin` sizes.
+
+| Component | Extra application bytes if restored | E87 media configuration |
+|---|---:|---|
+| FlashDB | 12,832 | Skip the watch database. Health and ANCS are disabled, as are the watch's small-file RCSP service and hands-free calling. The data reservation stays at `0x240000` (160 KiB). The gallery uses a separate 220 KiB area and saves preferences through `syscfg`. |
+| Uncompressed fonts | 4,576 | Compress the two DejaVu bitmap tables with LVGL's native format. |
+| Sport/health and IMU | 3,008 | Omit the health manager, its one-second timer and its algorithms. All IMU drivers for this board were already disabled. |
+| Bluetooth audio players | 2,528 | Disable A2DP music and eSCO call playback. Classic Bluetooth carries Object Push transfers. The DAC and system tone player remain available for low-battery and other alerts. |
+| Apple Notification Center Service (ANCS) | 1,088 | Omit watch notification handling and its 1,024-byte buffer. The Bluetooth bridge keeps its existing iOS pairing settings. |
+| Eager menu construction | 192 | Allocate the scanner's 12 buttons and labels on first use and omit the unused placeholder screen. |
+
+Successive E87 builds measured the changes to the home screen, logging and input handling.
+
+| Change | Application bytes | Difference from preceding build |
+|---|---:|---:|
+| Text prompt for an empty gallery, embedded JPEG removed | 959,040 | −4,544 |
+| Lossless compression of the 14 px Montserrat menu font | 956,768 | −2,272 |
+| Disable nine routine driver and Bluetooth controller log channels | 943,744 | −13,024 |
+| Wake the idle UI on input | 944,320 | +576 |
+
+The menu font test covers its 157 glyphs and all kerning pairs. The logging
+change uses the SDK's per-channel switches. Both logging builds contain the
+same 273 assertion messages and all 112 identified update diagnostics.
+
+These input changes suspend the UI task at the OS level. The E87 uses the
+existing LDO configuration with PMU deep sleep disabled. The board history
+records a boot hang with DCDC15 and deep sleep mode 2 enabled together.
+Battery-current comparisons require a physical badge.
+
+The RTC device, its wake callback and the application alarm handler remain
+active because a hardware alarm can select RTC mode. The media profile also
+retains its panel and touch drivers, BLE HID, the OTA service, JPEG/MJPEG
+decoding and SVG/text rendering.
+
+The two DejaVu bitmap tables use LVGL's existing decoder and occupy 13,234 bytes
+instead of 17,838. The host font test checks the metrics and visible pixels at
+16, 20 and 32 px. On blank gallery storage the first preparation check reads
+225,296 bytes. Caching the result costs 96 application bytes and reduces the
+next check to zero flash reads. An import still checks ownership and scans an
+unowned slot in full before programming it.
+
+On the same Linux host, packaging the same application took a median of 0.22 s
+with the standard-library CRC routines, down from 1.81 s over three runs each.
+Both repackers produced identical OTA files.
+
+After SDK setup, run the host checks with Python 3, Pillow and a native C
+compiler. Setting `BADGE_OPP_SDK` includes the SDK disconnect/reconnect tests.
+
+```sh
+BADGE_OPP_SDK=tools/community-re/jieli-sdks/e_badge_707_sdk_200 \
+  python3 -B -m unittest discover -s firmware/badge-media/tests
+python3 -B scripts/tests/test_badge_link.py
+python3 -B tools/ufw-repack/test_repack_crc.py
+```
 
 ---
 
